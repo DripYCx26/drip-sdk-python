@@ -200,9 +200,11 @@ class TestCustomerAPI:
                 200,
                 json={
                     "customerId": "cus_123",
-                    "balanceUSDC": "1000000",
-                    "balanceToken": "1000000000000000000",
-                    "lastUpdated": "2024-01-01T00:00:00Z",
+                    "onchainAddress": "0x1234567890abcdef1234567890abcdef12345678",
+                    "balanceUsdc": "1000000",
+                    "pendingChargesUsdc": "0",
+                    "availableUsdc": "1000000",
+                    "lastSyncedAt": "2024-01-01T00:00:00Z",
                 },
             )
         )
@@ -210,6 +212,7 @@ class TestCustomerAPI:
         balance = client.get_balance("cus_123")
         assert balance.customer_id == "cus_123"
         assert balance.balance_usdc == "1000000"
+        assert balance.available_usdc == "1000000"
 
 
 # =============================================================================
@@ -575,3 +578,107 @@ class TestUtilityMethods:
         assert Drip.verify_webhook_signature("", "sig", "secret") is False
         assert Drip.verify_webhook_signature("payload", "", "secret") is False
         assert Drip.verify_webhook_signature("payload", "sig", "") is False
+
+
+# =============================================================================
+# Resilience Integration Tests
+# =============================================================================
+
+
+class TestClientResilience:
+    """Tests for resilience integration in clients."""
+
+    def test_drip_with_resilience_enabled(self, api_key: str, base_url: str) -> None:
+        """Client should work with resilience=True."""
+        client = Drip(api_key=api_key, base_url=base_url, resilience=True)
+        assert client.resilience is not None
+        assert client.get_health() is not None
+        assert client.get_metrics() is not None
+
+    def test_drip_without_resilience(self, api_key: str, base_url: str) -> None:
+        """Client should work without resilience (default)."""
+        client = Drip(api_key=api_key, base_url=base_url)
+        assert client.resilience is None
+        assert client.get_health() is None
+        assert client.get_metrics() is None
+
+    def test_async_drip_with_resilience_enabled(
+        self, api_key: str, base_url: str
+    ) -> None:
+        """Async client should work with resilience=True."""
+        client = AsyncDrip(api_key=api_key, base_url=base_url, resilience=True)
+        assert client.resilience is not None
+        assert client.get_health() is not None
+        assert client.get_metrics() is not None
+
+    def test_async_drip_without_resilience(self, api_key: str, base_url: str) -> None:
+        """Async client should work without resilience (default)."""
+        client = AsyncDrip(api_key=api_key, base_url=base_url)
+        assert client.resilience is None
+        assert client.get_health() is None
+        assert client.get_metrics() is None
+
+    @respx.mock
+    def test_resilience_collects_metrics(
+        self, api_key: str, base_url: str
+    ) -> None:
+        """Resilient client should collect metrics on requests."""
+        respx.post(f"{base_url}/charges").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "success": True,
+                    "usageEventId": "u123",
+                    "isReplay": False,
+                    "charge": {
+                        "id": "chg_123",
+                        "amountUsdc": "100",
+                        "amountToken": "100000000000000",
+                        "txHash": "0xabc",
+                        "status": "CONFIRMED",
+                    },
+                },
+            )
+        )
+
+        client = Drip(api_key=api_key, base_url=base_url, resilience=True)
+        client.charge(customer_id="cus_123", meter="api_calls", quantity=1)
+
+        metrics = client.get_metrics()
+        assert metrics is not None
+        assert metrics["total_requests"] == 1
+        assert metrics["total_successes"] == 1
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_async_resilience_collects_metrics(
+        self, api_key: str, base_url: str
+    ) -> None:
+        """Async resilient client should collect metrics on requests."""
+        respx.post(f"{base_url}/charges").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "success": True,
+                    "usageEventId": "u123",
+                    "isReplay": False,
+                    "charge": {
+                        "id": "chg_123",
+                        "amountUsdc": "100",
+                        "amountToken": "100000000000000",
+                        "txHash": "0xabc",
+                        "status": "CONFIRMED",
+                    },
+                },
+            )
+        )
+
+        async with AsyncDrip(
+            api_key=api_key, base_url=base_url, resilience=True
+        ) as client:
+            await client.charge(customer_id="cus_123", meter="api_calls", quantity=1)
+
+            metrics = client.get_metrics()
+            assert metrics is not None
+            assert metrics["total_requests"] == 1
+            assert metrics["total_successes"] == 1

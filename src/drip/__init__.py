@@ -95,6 +95,9 @@ from .models import (
     # Checkout
     CheckoutParams,
     CheckoutResult,
+    # Cost Estimation
+    CostEstimateLineItem,
+    CostEstimateResponse,
     CreateCustomerParams,
     # Webhooks
     CreateWebhookParams,
@@ -111,6 +114,8 @@ from .models import (
     EndRunParams,
     EndRunResult,
     EventResult,
+    # Cost Estimation
+    HypotheticalUsageItem,
     # Utilities
     IdempotencyKeyParams,
     ListChargesOptions,
@@ -126,6 +131,8 @@ from .models import (
     RecordRunEvent,
     RecordRunParams,
     RecordRunResult,
+    # Retry Options
+    RetryOptions,
     RotateWebhookSecretResponse,
     RunResult,
     RunStatus,
@@ -133,10 +140,14 @@ from .models import (
     StartRunParams,
     TestWebhookResponse,
     TimelineEvent,
+    # Track usage (no billing)
+    TrackUsageResult,
     Webhook,
     WebhookEventType,
     WebhookStats,
     Workflow,
+    # Wrap API Call
+    WrapApiCallResult,
     # x402
     X402PaymentProof,
     X402PaymentRequest,
@@ -153,6 +164,30 @@ from .utils import (
     normalize_address,
     parse_usdc_amount,
     verify_webhook_signature,
+)
+
+# Resilience patterns
+from .resilience import (
+    # Rate Limiter
+    RateLimiter,
+    RateLimiterConfig,
+    # Retry
+    RetryConfig,
+    RetryExhausted,
+    with_retry,
+    with_retry_async,
+    calculate_backoff,
+    # Circuit Breaker
+    CircuitBreaker,
+    CircuitBreakerConfig,
+    CircuitBreakerOpen,
+    CircuitState,
+    # Metrics
+    MetricsCollector,
+    RequestMetrics,
+    # Combined Manager
+    ResilienceConfig,
+    ResilienceManager,
 )
 
 __all__ = [
@@ -197,6 +232,15 @@ __all__ = [
     "ListChargesOptions",
     "ListChargesResponse",
     "ChargeStatusResult",
+    # Track usage (no billing)
+    "TrackUsageResult",
+    # Wrap API Call
+    "WrapApiCallResult",
+    "RetryOptions",
+    # Cost Estimation
+    "HypotheticalUsageItem",
+    "CostEstimateLineItem",
+    "CostEstimateResponse",
     # Checkout models
     "CheckoutParams",
     "CheckoutResult",
@@ -242,4 +286,20 @@ __all__ = [
     "normalize_address",
     "format_usdc_amount",
     "parse_usdc_amount",
+    # Resilience patterns
+    "RateLimiter",
+    "RateLimiterConfig",
+    "RetryConfig",
+    "RetryExhausted",
+    "with_retry",
+    "with_retry_async",
+    "calculate_backoff",
+    "CircuitBreaker",
+    "CircuitBreakerConfig",
+    "CircuitBreakerOpen",
+    "CircuitState",
+    "MetricsCollector",
+    "RequestMetrics",
+    "ResilienceConfig",
+    "ResilienceManager",
 ]

@@ -712,3 +712,102 @@ class IdempotencyKeyParams(BaseModel):
     sequence: int | None = None
 
     model_config = ConfigDict(populate_by_name=True)
+
+
+# =============================================================================
+# Retry Configuration
+# =============================================================================
+
+
+class RetryOptions(BaseModel):
+    """Retry options for API calls with exponential backoff."""
+
+    max_attempts: int = Field(default=3, ge=1, description="Maximum number of retry attempts")
+    base_delay_ms: int = Field(
+        default=100, ge=0, alias="baseDelayMs", description="Base delay between retries in ms"
+    )
+    max_delay_ms: int = Field(
+        default=5000, ge=0, alias="maxDelayMs", description="Maximum delay between retries in ms"
+    )
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+# =============================================================================
+# Wrap API Call Models
+# =============================================================================
+
+
+class WrapApiCallResult(BaseModel):
+    """Result of wrapping an external API call with usage recording."""
+
+    result: Any = Field(..., description="The result from the external API call")
+    charge: ChargeResult = Field(..., description="The charge result from Drip")
+    idempotency_key: str = Field(
+        alias="idempotencyKey", description="The idempotency key used (useful for debugging)"
+    )
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+# =============================================================================
+# Cost Estimation Models
+# =============================================================================
+
+
+class HypotheticalUsageItem(BaseModel):
+    """A usage item for hypothetical cost estimation."""
+
+    usage_type: str = Field(alias="usageType", description="The usage type (e.g., 'api_call', 'token')")
+    quantity: float = Field(..., description="The quantity of usage")
+    unit_price_override: str | None = Field(
+        default=None, alias="unitPriceOverride", description="Override unit price for this item"
+    )
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class CostEstimateLineItem(BaseModel):
+    """A line item in the cost estimate."""
+
+    usage_type: str = Field(alias="usageType", description="The usage type")
+    quantity: str = Field(..., description="Total quantity")
+    unit_price: str = Field(alias="unitPrice", description="Unit price used")
+    estimated_cost_usdc: str = Field(alias="estimatedCostUsdc", description="Estimated cost in USDC")
+    event_count: int | None = Field(
+        default=None, alias="eventCount", description="Number of events (for usage-based estimates)"
+    )
+    has_pricing_plan: bool = Field(
+        alias="hasPricingPlan", description="Whether a pricing plan was found for this usage type"
+    )
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class CostEstimateResponse(BaseModel):
+    """Response from cost estimation."""
+
+    business_id: str = Field(alias="businessId", description="Business ID")
+    customer_id: str | None = Field(
+        default=None, alias="customerId", description="Customer ID (if filtered)"
+    )
+    period_start: str | None = Field(
+        default=None, alias="periodStart", description="Period start (for usage-based estimates)"
+    )
+    period_end: str | None = Field(
+        default=None, alias="periodEnd", description="Period end (for usage-based estimates)"
+    )
+    line_items: list[CostEstimateLineItem] = Field(
+        alias="lineItems", description="Breakdown by usage type"
+    )
+    subtotal_usdc: str = Field(alias="subtotalUsdc", description="Subtotal in USDC")
+    estimated_total_usdc: str = Field(
+        alias="estimatedTotalUsdc", description="Total estimated cost in USDC"
+    )
+    currency: Literal["USDC"] = Field(default="USDC", description="Currency (always USDC)")
+    is_estimate: Literal[True] = Field(
+        default=True, alias="isEstimate", description="Indicates this is an estimate"
+    )
+    generated_at: str = Field(alias="generatedAt", description="When the estimate was generated")
+
+    model_config = ConfigDict(populate_by_name=True)

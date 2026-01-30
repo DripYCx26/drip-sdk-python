@@ -7,15 +7,24 @@ the Drip API for usage-based billing with on-chain settlement.
 
 from __future__ import annotations
 
+import asyncio
 import os
-from typing import Any
+import random
+import time
+from datetime import datetime
+from typing import Any, Callable, TypeVar
 
 import httpx
 
 from .errors import (
     DripAuthenticationError,
     DripNetworkError,
+    DripRateLimitError,
     create_api_error_from_response,
+)
+from .resilience import (
+    ResilienceConfig,
+    ResilienceManager,
 )
 from .models import (
     BalanceResult,
@@ -23,6 +32,7 @@ from .models import (
     ChargeResult,
     ChargeStatusResult,
     CheckoutResult,
+    CostEstimateResponse,
     CreateWebhookResponse,
     Customer,
     CustomerStatus,
@@ -31,22 +41,116 @@ from .models import (
     EmitEventsBatchResult,
     EndRunResult,
     EventResult,
+    HypotheticalUsageItem,
     ListChargesResponse,
     ListCustomersResponse,
     ListMetersResponse,
     ListWebhooksResponse,
     ListWorkflowsResponse,
     RecordRunResult,
+    RetryOptions,
     RotateWebhookSecretResponse,
     RunResult,
     RunTimeline,
     TestWebhookResponse,
     TrackUsageResult,
     Webhook,
+    WrapApiCallResult,
     Workflow,
 )
 from .stream import StreamMeter, StreamMeterOptions
 from .utils import generate_idempotency_key, verify_webhook_signature
+
+# Type variable for generic wrap_api_call
+T = TypeVar("T")
+
+# Default retry configuration
+DEFAULT_RETRY_CONFIG = RetryOptions(max_attempts=3, base_delay_ms=100, max_delay_ms=5000)
+
+
+def _is_retryable_error(error: Exception) -> bool:
+    """Determine if an error is retryable."""
+    # Check for network errors
+    if isinstance(error, (httpx.TimeoutException, httpx.NetworkError)):
+        return True
+
+    # Check for DripError with retryable status codes
+    if hasattr(error, "status_code"):
+        status_code = getattr(error, "status_code")
+        # Retry on 5xx, 408 (timeout), 429 (rate limit)
+        return status_code >= 500 or status_code == 408 or status_code == 429
+
+    return False
+
+
+def _retry_with_backoff_sync(
+    fn: Callable[[], T],
+    options: RetryOptions | None = None,
+) -> T:
+    """Execute a function with exponential backoff retry (synchronous)."""
+    opts = options or DEFAULT_RETRY_CONFIG
+    max_attempts = opts.max_attempts
+    base_delay_ms = opts.base_delay_ms
+    max_delay_ms = opts.max_delay_ms
+
+    last_error: Exception | None = None
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return fn()
+        except Exception as error:
+            last_error = error
+
+            # Don't retry on last attempt or non-retryable errors
+            if attempt == max_attempts or not _is_retryable_error(error):
+                raise
+
+            # Exponential backoff with jitter
+            delay_ms = min(
+                base_delay_ms * (2 ** (attempt - 1)) + random.random() * 100,
+                max_delay_ms,
+            )
+            time.sleep(delay_ms / 1000)
+
+    # Should never reach here, but needed for type checker
+    if last_error:
+        raise last_error
+    raise RuntimeError("Unexpected state in retry logic")
+
+
+async def _retry_with_backoff_async(
+    fn: Callable[[], Any],
+    options: RetryOptions | None = None,
+) -> Any:
+    """Execute an async function with exponential backoff retry."""
+    opts = options or DEFAULT_RETRY_CONFIG
+    max_attempts = opts.max_attempts
+    base_delay_ms = opts.base_delay_ms
+    max_delay_ms = opts.max_delay_ms
+
+    last_error: Exception | None = None
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return await fn()
+        except Exception as error:
+            last_error = error
+
+            # Don't retry on last attempt or non-retryable errors
+            if attempt == max_attempts or not _is_retryable_error(error):
+                raise
+
+            # Exponential backoff with jitter
+            delay_ms = min(
+                base_delay_ms * (2 ** (attempt - 1)) + random.random() * 100,
+                max_delay_ms,
+            )
+            await asyncio.sleep(delay_ms / 1000)
+
+    # Should never reach here, but needed for type checker
+    if last_error:
+        raise last_error
+    raise RuntimeError("Unexpected state in retry logic")
 
 
 class Drip:
@@ -88,6 +192,7 @@ class Drip:
         api_key: str | None = None,
         base_url: str | None = None,
         timeout: float | None = None,
+        resilience: bool | ResilienceConfig | None = None,
     ) -> None:
         """
         Initialize the Drip client.
@@ -98,9 +203,27 @@ class Drip:
             base_url: Base URL for the API. Defaults to https://api.drip.dev/v1.
                       Can also be set via DRIP_API_URL environment variable.
             timeout: Request timeout in seconds. Defaults to 30.
+            resilience: Enable production resilience features (rate limiting,
+                       retry with backoff, circuit breaker, metrics).
+                       - True: Use default production settings
+                       - ResilienceConfig: Use custom configuration
+                       - None/False: Disabled (default for backward compatibility)
 
         Raises:
             DripAuthenticationError: If no API key is provided or found in environment.
+
+        Example:
+            >>> # Basic usage
+            >>> client = Drip(api_key="drip_sk_...")
+            >>>
+            >>> # With production resilience (recommended)
+            >>> client = Drip(api_key="drip_sk_...", resilience=True)
+            >>>
+            >>> # With custom resilience settings
+            >>> client = Drip(
+            ...     api_key="drip_sk_...",
+            ...     resilience=ResilienceConfig.high_throughput()
+            ... )
         """
         self._api_key = api_key or os.environ.get("DRIP_API_KEY")
         if not self._api_key:
@@ -112,6 +235,14 @@ class Drip:
             base_url or os.environ.get("DRIP_API_URL") or self.DEFAULT_BASE_URL
         ).rstrip("/")
         self._timeout = timeout or self.DEFAULT_TIMEOUT
+
+        # Setup resilience manager
+        if resilience is True:
+            self._resilience = ResilienceManager(ResilienceConfig.default())
+        elif isinstance(resilience, ResilienceConfig):
+            self._resilience = ResilienceManager(resilience)
+        else:
+            self._resilience = None
 
         self._client = httpx.Client(
             base_url=self._base_url,
@@ -145,6 +276,47 @@ class Drip:
             base_url=self._base_url,
             timeout=self._timeout,
         )
+
+    @property
+    def resilience(self) -> ResilienceManager | None:
+        """Get the resilience manager (if enabled)."""
+        return self._resilience
+
+    def get_metrics(self) -> dict[str, Any] | None:
+        """
+        Get SDK metrics (requires resilience=True).
+
+        Returns:
+            Metrics summary including success rate, latencies, errors.
+            None if resilience is not enabled.
+
+        Example:
+            >>> client = Drip(api_key="...", resilience=True)
+            >>> # ... make some requests ...
+            >>> metrics = client.get_metrics()
+            >>> print(f"Success rate: {metrics['success_rate']}%")
+            >>> print(f"P95 latency: {metrics['p95_latency_ms']}ms")
+        """
+        if self._resilience:
+            return self._resilience.get_metrics()
+        return None
+
+    def get_health(self) -> dict[str, Any] | None:
+        """
+        Get SDK health status (requires resilience=True).
+
+        Returns:
+            Health status including circuit breaker state, rate limiter status.
+            None if resilience is not enabled.
+
+        Example:
+            >>> client = Drip(api_key="...", resilience=True)
+            >>> health = client.get_health()
+            >>> print(f"Circuit: {health['circuit_breaker']['state']}")
+        """
+        if self._resilience:
+            return self._resilience.get_health()
+        return None
 
     # =========================================================================
     # Health Check
@@ -221,6 +393,22 @@ class Drip:
             DripAPIError: For API errors.
             DripNetworkError: For network errors.
         """
+        if self._resilience:
+            return self._resilience.execute(
+                lambda: self._raw_request(method, path, json, params),
+                method=method,
+                endpoint=path,
+            )
+        return self._raw_request(method, path, json, params)
+
+    def _raw_request(
+        self,
+        method: str,
+        path: str,
+        json: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Execute the actual HTTP request (internal)."""
         try:
             response = self._client.request(
                 method=method,
@@ -240,7 +428,10 @@ class Drip:
             except Exception:
                 body = {"error": response.text or "Unknown error"}
 
-            raise create_api_error_from_response(response.status_code, body)
+            error = create_api_error_from_response(response.status_code, body)
+            # Add status_code for resilience retry logic
+            error.status_code = response.status_code  # type: ignore[attr-defined]
+            raise error
 
         # Parse successful response
         if response.status_code == 204:
@@ -507,6 +698,254 @@ class Drip:
 
         response = self._post("/usage/internal", json=body)
         return TrackUsageResult.model_validate(response)
+
+    def wrap_api_call(
+        self,
+        customer_id: str,
+        meter: str,
+        call: Callable[[], T],
+        extract_usage: Callable[[T], float],
+        idempotency_key: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        retry_options: RetryOptions | None = None,
+    ) -> WrapApiCallResult:
+        """
+        Wraps an external API call with guaranteed usage recording.
+
+        This solves the crash-before-record problem:
+
+        DANGEROUS - usage lost if crash between lines 1 and 2:
+        >>> response = openai.chat.completions.create(...)  # line 1
+        >>> client.charge(customer_id, "tokens", response.usage.total_tokens)  # line 2
+
+        SAFE - wrap_api_call guarantees recording with retry:
+        >>> result = client.wrap_api_call(
+        ...     customer_id="cust_123",
+        ...     meter="tokens",
+        ...     call=lambda: openai.chat.completions.create(...),
+        ...     extract_usage=lambda r: r.usage.total_tokens,
+        ... )
+
+        How it works:
+        1. Generates idempotency key BEFORE the API call
+        2. Makes the external API call (once, no retry)
+        3. Records usage in Drip with retry + idempotency
+        4. If recording fails transiently, retries are safe (no double-charge)
+
+        Args:
+            customer_id: The Drip customer ID to charge.
+            meter: The usage meter/type to record against.
+            call: The function that makes the external API call.
+            extract_usage: Function to extract usage quantity from the API result.
+            idempotency_key: Custom idempotency key prefix (auto-generated if not provided).
+            metadata: Optional metadata to attach to the charge.
+            retry_options: Custom retry options for the charge call.
+
+        Returns:
+            WrapApiCallResult containing the API result, charge result, and idempotency key.
+
+        Raises:
+            DripAPIError: If the Drip charge fails after retries.
+            Exception: If the external API call fails (no retry).
+
+        Example:
+            >>> # OpenAI example
+            >>> result = client.wrap_api_call(
+            ...     customer_id="cust_abc123",
+            ...     meter="tokens",
+            ...     call=lambda: openai.chat.completions.create(
+            ...         model="gpt-4",
+            ...         messages=[{"role": "user", "content": "Hello!"}],
+            ...     ),
+            ...     extract_usage=lambda r: r.usage.total_tokens if r.usage else 0,
+            ... )
+            >>> print(result.result.choices[0].message.content)
+            >>> print(f"Charged: {result.charge.charge.amount_usdc} USDC")
+
+            >>> # Anthropic example
+            >>> result = client.wrap_api_call(
+            ...     customer_id="cust_abc123",
+            ...     meter="tokens",
+            ...     call=lambda: anthropic.messages.create(
+            ...         model="claude-3-opus-20240229",
+            ...         max_tokens=1024,
+            ...         messages=[{"role": "user", "content": "Hello!"}],
+            ...     ),
+            ...     extract_usage=lambda r: r.usage.input_tokens + r.usage.output_tokens,
+            ... )
+        """
+        # Generate idempotency key BEFORE the call - this is the key insight!
+        # Even if we crash after the API call, retrying with the same key is safe.
+        key = idempotency_key or f"wrap_{int(time.time() * 1000)}_{random.randbytes(8).hex()[:9]}"
+
+        # Step 1: Make the external API call (no retry - we don't control this)
+        result = call()
+
+        # Step 2: Extract usage from the result
+        quantity = extract_usage(result)
+
+        # Step 3: Record usage in Drip with retry (idempotency makes this safe)
+        charge = _retry_with_backoff_sync(
+            lambda: self.charge(
+                customer_id=customer_id,
+                meter=meter,
+                quantity=quantity,
+                idempotency_key=key,
+                metadata=metadata,
+            ),
+            retry_options,
+        )
+
+        return WrapApiCallResult(
+            result=result,
+            charge=charge,
+            idempotency_key=key,
+        )
+
+    # =========================================================================
+    # Cost Estimation
+    # =========================================================================
+
+    def estimate_from_usage(
+        self,
+        period_start: datetime | str,
+        period_end: datetime | str,
+        customer_id: str | None = None,
+        default_unit_price: str | None = None,
+        include_charged_events: bool | None = None,
+        usage_types: list[str] | None = None,
+        custom_pricing: dict[str, str] | None = None,
+    ) -> CostEstimateResponse:
+        """
+        Estimates costs from historical usage events.
+
+        Use this to preview what existing usage would cost before creating charges,
+        or to run "what-if" scenarios with custom pricing.
+
+        Args:
+            period_start: Start of the period to estimate (datetime or ISO string).
+            period_end: End of the period to estimate (datetime or ISO string).
+            customer_id: Filter to a specific customer (optional).
+            default_unit_price: Default price for usage types without pricing plans.
+            include_charged_events: Include events that already have charges (default: True).
+            usage_types: Filter to specific usage types.
+            custom_pricing: Custom pricing overrides (takes precedence over DB pricing).
+
+        Returns:
+            CostEstimateResponse with line item breakdown.
+
+        Example:
+            >>> # Estimate costs for last month's usage
+            >>> estimate = client.estimate_from_usage(
+            ...     period_start=datetime(2024, 1, 1),
+            ...     period_end=datetime(2024, 1, 31),
+            ... )
+            >>> print(f"Estimated total: ${estimate.estimated_total_usdc}")
+
+            >>> # "What-if" scenario with custom pricing
+            >>> estimate = client.estimate_from_usage(
+            ...     period_start="2024-01-01T00:00:00Z",
+            ...     period_end="2024-01-31T23:59:59Z",
+            ...     custom_pricing={
+            ...         "api_call": "0.005",  # What if we charged $0.005 per call?
+            ...         "token": "0.0001",    # What if we charged $0.0001 per token?
+            ...     },
+            ... )
+        """
+        # Convert datetime to ISO string if needed
+        start_str = period_start.isoformat() if isinstance(period_start, datetime) else period_start
+        end_str = period_end.isoformat() if isinstance(period_end, datetime) else period_end
+
+        body: dict[str, Any] = {
+            "periodStart": start_str,
+            "periodEnd": end_str,
+        }
+
+        if customer_id is not None:
+            body["customerId"] = customer_id
+        if default_unit_price is not None:
+            body["defaultUnitPrice"] = default_unit_price
+        if include_charged_events is not None:
+            body["includeChargedEvents"] = include_charged_events
+        if usage_types is not None:
+            body["usageTypes"] = usage_types
+        if custom_pricing is not None:
+            body["customPricing"] = custom_pricing
+
+        response = self._post("/dashboard/cost-estimate/from-usage", json=body)
+        return CostEstimateResponse.model_validate(response)
+
+    def estimate_from_hypothetical(
+        self,
+        items: list[HypotheticalUsageItem] | list[dict[str, Any]],
+        default_unit_price: str | None = None,
+        custom_pricing: dict[str, str] | None = None,
+    ) -> CostEstimateResponse:
+        """
+        Estimates costs from hypothetical usage.
+
+        Use this for "what-if" scenarios, budget planning, or to preview
+        costs before usage occurs.
+
+        Args:
+            items: List of usage items to estimate. Each item should have:
+                - usage_type (or usageType): The usage type (e.g., "api_call", "token")
+                - quantity: The quantity of usage
+                - unit_price_override (optional): Override unit price for this item
+            default_unit_price: Default price for usage types without pricing plans.
+            custom_pricing: Custom pricing overrides (takes precedence over DB pricing).
+
+        Returns:
+            CostEstimateResponse with line item breakdown.
+
+        Example:
+            >>> # Estimate what 10,000 API calls and 1M tokens would cost
+            >>> estimate = client.estimate_from_hypothetical(
+            ...     items=[
+            ...         HypotheticalUsageItem(usage_type="api_call", quantity=10000),
+            ...         HypotheticalUsageItem(usage_type="token", quantity=1000000),
+            ...     ],
+            ... )
+            >>> print(f"Estimated total: ${estimate.estimated_total_usdc}")
+            >>> for item in estimate.line_items:
+            ...     print(f"  {item.usage_type}: {item.quantity} × ${item.unit_price} = ${item.estimated_cost_usdc}")
+
+            >>> # Using dicts instead of models
+            >>> estimate = client.estimate_from_hypothetical(
+            ...     items=[
+            ...         {"usageType": "api_call", "quantity": 10000},
+            ...         {"usageType": "token", "quantity": 1000000},
+            ...     ],
+            ... )
+
+            >>> # Compare different pricing scenarios
+            >>> current = client.estimate_from_hypothetical(
+            ...     items=[{"usageType": "api_call", "quantity": 100000}],
+            ... )
+            >>> discounted = client.estimate_from_hypothetical(
+            ...     items=[{"usageType": "api_call", "quantity": 100000}],
+            ...     custom_pricing={"api_call": "0.0005"},  # 50% discount
+            ... )
+            >>> print(f"Current: ${current.estimated_total_usdc}")
+            >>> print(f"With 50% discount: ${discounted.estimated_total_usdc}")
+        """
+        # Convert items to dicts if they're Pydantic models
+        items_data: list[dict[str, Any]] = []
+        for item in items:
+            if isinstance(item, HypotheticalUsageItem):
+                items_data.append(item.model_dump(by_alias=True, exclude_none=True))
+            else:
+                items_data.append(item)
+
+        body: dict[str, Any] = {"items": items_data}
+
+        if default_unit_price is not None:
+            body["defaultUnitPrice"] = default_unit_price
+        if custom_pricing is not None:
+            body["customPricing"] = custom_pricing
+
+        response = self._post("/dashboard/cost-estimate/hypothetical", json=body)
+        return CostEstimateResponse.model_validate(response)
 
     # =========================================================================
     # Checkout (Fiat On-Ramp)
@@ -1071,6 +1510,7 @@ class AsyncDrip:
         api_key: str | None = None,
         base_url: str | None = None,
         timeout: float | None = None,
+        resilience: bool | ResilienceConfig | None = None,
     ) -> None:
         """
         Initialize the async Drip client.
@@ -1079,6 +1519,20 @@ class AsyncDrip:
             api_key: API key from Drip dashboard.
             base_url: Base URL for the API.
             timeout: Request timeout in seconds.
+            resilience: Enable production resilience features (rate limiting,
+                       retry with backoff, circuit breaker, metrics).
+                       - True: Use default production settings
+                       - ResilienceConfig: Use custom configuration
+                       - None/False: Disabled (default for backward compatibility)
+
+        Example:
+            >>> # Basic usage
+            >>> async with AsyncDrip(api_key="drip_sk_...") as client:
+            ...     customer = await client.create_customer(...)
+            >>>
+            >>> # With production resilience (recommended)
+            >>> async with AsyncDrip(api_key="drip_sk_...", resilience=True) as client:
+            ...     customer = await client.create_customer(...)
         """
         self._api_key = api_key or os.environ.get("DRIP_API_KEY")
         if not self._api_key:
@@ -1090,6 +1544,14 @@ class AsyncDrip:
             base_url or os.environ.get("DRIP_API_URL") or self.DEFAULT_BASE_URL
         ).rstrip("/")
         self._timeout = timeout or self.DEFAULT_TIMEOUT
+
+        # Setup resilience manager
+        if resilience is True:
+            self._resilience = ResilienceManager(ResilienceConfig.default())
+        elif isinstance(resilience, ResilienceConfig):
+            self._resilience = ResilienceManager(resilience)
+        else:
+            self._resilience = None
 
         self._client = httpx.AsyncClient(
             base_url=self._base_url,
@@ -1123,6 +1585,35 @@ class AsyncDrip:
             base_url=self._base_url,
             timeout=self._timeout,
         )
+
+    @property
+    def resilience(self) -> ResilienceManager | None:
+        """Get the resilience manager (if enabled)."""
+        return self._resilience
+
+    def get_metrics(self) -> dict[str, Any] | None:
+        """
+        Get SDK metrics (requires resilience=True).
+
+        Returns:
+            Metrics summary including success rate, latencies, errors.
+            None if resilience is not enabled.
+        """
+        if self._resilience:
+            return self._resilience.get_metrics()
+        return None
+
+    def get_health(self) -> dict[str, Any] | None:
+        """
+        Get SDK health status (requires resilience=True).
+
+        Returns:
+            Health status including circuit breaker state, rate limiter status.
+            None if resilience is not enabled.
+        """
+        if self._resilience:
+            return self._resilience.get_health()
+        return None
 
     # =========================================================================
     # Health Check
@@ -1184,6 +1675,22 @@ class AsyncDrip:
         params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Make an async HTTP request."""
+        if self._resilience:
+            return await self._resilience.execute_async(
+                lambda: self._raw_request(method, path, json, params),
+                method=method,
+                endpoint=path,
+            )
+        return await self._raw_request(method, path, json, params)
+
+    async def _raw_request(
+        self,
+        method: str,
+        path: str,
+        json: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Execute the actual async HTTP request (internal)."""
         try:
             response = await self._client.request(
                 method=method,
@@ -1202,7 +1709,10 @@ class AsyncDrip:
             except Exception:
                 body = {"error": response.text or "Unknown error"}
 
-            raise create_api_error_from_response(response.status_code, body)
+            error = create_api_error_from_response(response.status_code, body)
+            # Add status_code for resilience retry logic
+            error.status_code = response.status_code  # type: ignore[attr-defined]
+            raise error
 
         if response.status_code == 204:
             return {}
@@ -1375,6 +1885,215 @@ class AsyncDrip:
 
         response = await self._post("/usage/internal", json=body)
         return TrackUsageResult.model_validate(response)
+
+    async def wrap_api_call(
+        self,
+        customer_id: str,
+        meter: str,
+        call: Callable[[], Any],
+        extract_usage: Callable[[Any], float],
+        idempotency_key: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        retry_options: RetryOptions | None = None,
+    ) -> WrapApiCallResult:
+        """
+        Wraps an external async API call with guaranteed usage recording.
+
+        This solves the crash-before-record problem:
+
+        DANGEROUS - usage lost if crash between lines 1 and 2:
+        >>> response = await openai.chat.completions.create(...)  # line 1
+        >>> await client.charge(customer_id, "tokens", response.usage.total_tokens)  # line 2
+
+        SAFE - wrap_api_call guarantees recording with retry:
+        >>> result = await client.wrap_api_call(
+        ...     customer_id="cust_123",
+        ...     meter="tokens",
+        ...     call=lambda: openai.chat.completions.create(...),
+        ...     extract_usage=lambda r: r.usage.total_tokens,
+        ... )
+
+        How it works:
+        1. Generates idempotency key BEFORE the API call
+        2. Makes the external API call (once, no retry)
+        3. Records usage in Drip with retry + idempotency
+        4. If recording fails transiently, retries are safe (no double-charge)
+
+        Args:
+            customer_id: The Drip customer ID to charge.
+            meter: The usage meter/type to record against.
+            call: The async function that makes the external API call.
+            extract_usage: Function to extract usage quantity from the API result.
+            idempotency_key: Custom idempotency key prefix (auto-generated if not provided).
+            metadata: Optional metadata to attach to the charge.
+            retry_options: Custom retry options for the charge call.
+
+        Returns:
+            WrapApiCallResult containing the API result, charge result, and idempotency key.
+
+        Raises:
+            DripAPIError: If the Drip charge fails after retries.
+            Exception: If the external API call fails (no retry).
+
+        Example:
+            >>> async with AsyncDrip(api_key="...") as client:
+            ...     result = await client.wrap_api_call(
+            ...         customer_id="cust_abc123",
+            ...         meter="tokens",
+            ...         call=lambda: openai.chat.completions.create(
+            ...             model="gpt-4",
+            ...             messages=[{"role": "user", "content": "Hello!"}],
+            ...         ),
+            ...         extract_usage=lambda r: r.usage.total_tokens if r.usage else 0,
+            ...     )
+            ...     print(result.result.choices[0].message.content)
+            ...     print(f"Charged: {result.charge.charge.amount_usdc} USDC")
+        """
+        # Generate idempotency key BEFORE the call
+        key = idempotency_key or f"wrap_{int(time.time() * 1000)}_{random.randbytes(8).hex()[:9]}"
+
+        # Step 1: Make the external API call (no retry - we don't control this)
+        api_result = call()
+        # Handle both sync and async calls
+        if hasattr(api_result, "__await__"):
+            result = await api_result
+        else:
+            result = api_result
+
+        # Step 2: Extract usage from the result
+        quantity = extract_usage(result)
+
+        # Step 3: Record usage in Drip with retry (idempotency makes this safe)
+        charge = await _retry_with_backoff_async(
+            lambda: self.charge(
+                customer_id=customer_id,
+                meter=meter,
+                quantity=quantity,
+                idempotency_key=key,
+                metadata=metadata,
+            ),
+            retry_options,
+        )
+
+        return WrapApiCallResult(
+            result=result,
+            charge=charge,
+            idempotency_key=key,
+        )
+
+    # =========================================================================
+    # Cost Estimation
+    # =========================================================================
+
+    async def estimate_from_usage(
+        self,
+        period_start: datetime | str,
+        period_end: datetime | str,
+        customer_id: str | None = None,
+        default_unit_price: str | None = None,
+        include_charged_events: bool | None = None,
+        usage_types: list[str] | None = None,
+        custom_pricing: dict[str, str] | None = None,
+    ) -> CostEstimateResponse:
+        """
+        Estimates costs from historical usage events.
+
+        Use this to preview what existing usage would cost before creating charges,
+        or to run "what-if" scenarios with custom pricing.
+
+        Args:
+            period_start: Start of the period to estimate (datetime or ISO string).
+            period_end: End of the period to estimate (datetime or ISO string).
+            customer_id: Filter to a specific customer (optional).
+            default_unit_price: Default price for usage types without pricing plans.
+            include_charged_events: Include events that already have charges (default: True).
+            usage_types: Filter to specific usage types.
+            custom_pricing: Custom pricing overrides (takes precedence over DB pricing).
+
+        Returns:
+            CostEstimateResponse with line item breakdown.
+
+        Example:
+            >>> async with AsyncDrip(api_key="...") as client:
+            ...     estimate = await client.estimate_from_usage(
+            ...         period_start=datetime(2024, 1, 1),
+            ...         period_end=datetime(2024, 1, 31),
+            ...     )
+            ...     print(f"Estimated total: ${estimate.estimated_total_usdc}")
+        """
+        # Convert datetime to ISO string if needed
+        start_str = period_start.isoformat() if isinstance(period_start, datetime) else period_start
+        end_str = period_end.isoformat() if isinstance(period_end, datetime) else period_end
+
+        body: dict[str, Any] = {
+            "periodStart": start_str,
+            "periodEnd": end_str,
+        }
+
+        if customer_id is not None:
+            body["customerId"] = customer_id
+        if default_unit_price is not None:
+            body["defaultUnitPrice"] = default_unit_price
+        if include_charged_events is not None:
+            body["includeChargedEvents"] = include_charged_events
+        if usage_types is not None:
+            body["usageTypes"] = usage_types
+        if custom_pricing is not None:
+            body["customPricing"] = custom_pricing
+
+        response = await self._post("/dashboard/cost-estimate/from-usage", json=body)
+        return CostEstimateResponse.model_validate(response)
+
+    async def estimate_from_hypothetical(
+        self,
+        items: list[HypotheticalUsageItem] | list[dict[str, Any]],
+        default_unit_price: str | None = None,
+        custom_pricing: dict[str, str] | None = None,
+    ) -> CostEstimateResponse:
+        """
+        Estimates costs from hypothetical usage.
+
+        Use this for "what-if" scenarios, budget planning, or to preview
+        costs before usage occurs.
+
+        Args:
+            items: List of usage items to estimate. Each item should have:
+                - usage_type (or usageType): The usage type (e.g., "api_call", "token")
+                - quantity: The quantity of usage
+                - unit_price_override (optional): Override unit price for this item
+            default_unit_price: Default price for usage types without pricing plans.
+            custom_pricing: Custom pricing overrides (takes precedence over DB pricing).
+
+        Returns:
+            CostEstimateResponse with line item breakdown.
+
+        Example:
+            >>> async with AsyncDrip(api_key="...") as client:
+            ...     estimate = await client.estimate_from_hypothetical(
+            ...         items=[
+            ...             HypotheticalUsageItem(usage_type="api_call", quantity=10000),
+            ...             HypotheticalUsageItem(usage_type="token", quantity=1000000),
+            ...         ],
+            ...     )
+            ...     print(f"Estimated total: ${estimate.estimated_total_usdc}")
+        """
+        # Convert items to dicts if they're Pydantic models
+        items_data: list[dict[str, Any]] = []
+        for item in items:
+            if isinstance(item, HypotheticalUsageItem):
+                items_data.append(item.model_dump(by_alias=True, exclude_none=True))
+            else:
+                items_data.append(item)
+
+        body: dict[str, Any] = {"items": items_data}
+
+        if default_unit_price is not None:
+            body["defaultUnitPrice"] = default_unit_price
+        if custom_pricing is not None:
+            body["customPricing"] = custom_pricing
+
+        response = await self._post("/dashboard/cost-estimate/hypothetical", json=body)
+        return CostEstimateResponse.model_validate(response)
 
     # =========================================================================
     # Checkout
