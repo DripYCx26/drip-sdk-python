@@ -3,15 +3,13 @@ Find the SDK's transaction limit - push until it breaks.
 """
 
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import uuid
-import asyncio
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import httpx
 import respx
 
-from drip import Drip, AsyncDrip
-
+from drip import Drip
 
 API_BASE_URL = "https://api.drip.dev/v1"
 API_KEY = "drip_sk_test_limit"
@@ -75,7 +73,7 @@ def test_find_concurrent_limit():
             try:
                 client.charge(customer_id="cus_limit", meter="test", quantity=1)
                 return True
-            except Exception as e:
+            except Exception:
                 return False
 
         start = time.perf_counter()

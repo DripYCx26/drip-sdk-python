@@ -5,19 +5,18 @@ This test measures how many charges the SDK can process per second
 with mocked HTTP responses (testing SDK overhead, not network latency).
 """
 
-import time
+import asyncio
 import statistics
+import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-import uuid
 
 import httpx
 import pytest
 import respx
 
-from drip import Drip, AsyncDrip, ChargeResult
-import asyncio
-
+from drip import AsyncDrip, Drip
 
 API_BASE_URL = "https://api.drip.dev/v1"
 API_KEY = "drip_sk_test_stress"
@@ -95,7 +94,7 @@ class TestStressPerformance:
 
         start_time = time.perf_counter()
 
-        for i in range(num_requests):
+        for _ in range(num_requests):
             req_start = time.perf_counter()
             client.charge(
                 customer_id=customer_id,

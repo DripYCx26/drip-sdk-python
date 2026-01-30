@@ -1,10 +1,11 @@
 """Tests for StreamMeter."""
 
-from unittest.mock import MagicMock, AsyncMock
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
 
-from drip.stream import StreamMeter, StreamMeterOptions, StreamMeterFlushResult
-from drip.models import ChargeResult, ChargeInfo, ChargeStatus
+from drip.models import ChargeInfo, ChargeResult, ChargeStatus
+from drip.stream import StreamMeter, StreamMeterOptions
 
 
 @pytest.fixture
