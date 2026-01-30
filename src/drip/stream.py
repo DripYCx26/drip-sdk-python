@@ -34,13 +34,14 @@ Async Example:
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Awaitable, Callable, Protocol, Union
+from typing import TYPE_CHECKING, Protocol
 
 from .models import ChargeInfo, ChargeResult
 
 if TYPE_CHECKING:
-    from .models import ChargeParams
+    pass
 
 
 @dataclass
@@ -65,7 +66,7 @@ class StreamMeterOptions:
     on_add: Callable[[float, float], None] | None = None
     """Callback invoked on each add() call with (quantity, total)."""
 
-    on_flush: Callable[["StreamMeterFlushResult"], None] | None = None
+    on_flush: Callable[[StreamMeterFlushResult], None] | None = None
     """Callback invoked after each successful flush."""
 
 
@@ -112,7 +113,7 @@ class AsyncChargeFn(Protocol):
     ) -> Awaitable[ChargeResult]: ...
 
 
-ChargeFn = Union[SyncChargeFn, AsyncChargeFn]
+ChargeFn = SyncChargeFn | AsyncChargeFn
 
 
 @dataclass

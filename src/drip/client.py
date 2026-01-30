@@ -11,20 +11,16 @@ import asyncio
 import os
 import random
 import time
+from collections.abc import Callable
 from datetime import datetime
-from typing import Any, Callable, TypeVar
+from typing import Any, TypeVar
 
 import httpx
 
 from .errors import (
     DripAuthenticationError,
     DripNetworkError,
-    DripRateLimitError,
     create_api_error_from_response,
-)
-from .resilience import (
-    ResilienceConfig,
-    ResilienceManager,
 )
 from .models import (
     BalanceResult,
@@ -55,8 +51,12 @@ from .models import (
     TestWebhookResponse,
     TrackUsageResult,
     Webhook,
-    WrapApiCallResult,
     Workflow,
+    WrapApiCallResult,
+)
+from .resilience import (
+    ResilienceConfig,
+    ResilienceManager,
 )
 from .stream import StreamMeter, StreamMeterOptions
 from .utils import generate_idempotency_key, verify_webhook_signature
@@ -76,7 +76,7 @@ def _is_retryable_error(error: Exception) -> bool:
 
     # Check for DripError with retryable status codes
     if hasattr(error, "status_code"):
-        status_code = getattr(error, "status_code")
+        status_code = error.status_code
         # Retry on 5xx, 408 (timeout), 429 (rate limit)
         return status_code >= 500 or status_code == 408 or status_code == 429
 

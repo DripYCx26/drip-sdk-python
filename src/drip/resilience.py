@@ -16,10 +16,11 @@ import random
 import threading
 import time
 from collections import deque
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from enum import Enum
 from functools import wraps
-from typing import Any, Callable, TypeVar, ParamSpec, Awaitable
+from typing import Any, ParamSpec, TypeVar
 
 logger = logging.getLogger("drip.resilience")
 
@@ -423,12 +424,7 @@ class CircuitBreaker:
         with self._lock:
             self._check_state_transition()
 
-            if self._state == CircuitState.CLOSED:
-                return True
-            elif self._state == CircuitState.HALF_OPEN:
-                return True  # Allow test request
-            else:  # OPEN
-                return False
+            return self._state in (CircuitState.CLOSED, CircuitState.HALF_OPEN)
 
     def get_time_until_retry(self) -> float:
         """Get seconds until circuit transitions to half-open."""
@@ -449,7 +445,7 @@ class CircuitBreaker:
                 result = func(*args, **kwargs)
                 self.record_success()
                 return result
-            except Exception as e:
+            except Exception:
                 self.record_failure()
                 raise
 
@@ -574,7 +570,7 @@ class ResilienceConfig:
     collect_metrics: bool = True
 
     @classmethod
-    def default(cls) -> "ResilienceConfig":
+    def default(cls) -> ResilienceConfig:
         """Create default production configuration."""
         return cls(
             rate_limiter=RateLimiterConfig(
@@ -598,7 +594,7 @@ class ResilienceConfig:
         )
 
     @classmethod
-    def disabled(cls) -> "ResilienceConfig":
+    def disabled(cls) -> ResilienceConfig:
         """Create configuration with all features disabled."""
         return cls(
             rate_limiter=RateLimiterConfig(enabled=False),
@@ -608,7 +604,7 @@ class ResilienceConfig:
         )
 
     @classmethod
-    def high_throughput(cls) -> "ResilienceConfig":
+    def high_throughput(cls) -> ResilienceConfig:
         """Configuration optimized for high throughput."""
         return cls(
             rate_limiter=RateLimiterConfig(

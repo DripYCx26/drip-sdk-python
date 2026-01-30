@@ -12,14 +12,12 @@ import respx
 
 from drip import (
     AsyncDrip,
-    ChargeStatus,
     CostEstimateResponse,
     Drip,
     HypotheticalUsageItem,
     RetryOptions,
     WrapApiCallResult,
 )
-
 
 # =============================================================================
 # Fixtures
@@ -205,7 +203,7 @@ class TestWrapApiCall:
                 customer_id="cus_123",
                 meter="tokens",
                 call=failing_call,
-                extract_usage=lambda r: 0,
+                extract_usage=lambda _: 0,
             )
 
     @respx.mock

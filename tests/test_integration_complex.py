@@ -24,25 +24,19 @@ import respx
 
 # Import SDK components
 from drip import (
-    Drip,
     AsyncDrip,
-    StreamMeter,
-    Customer,
-    Charge,
     ChargeResult,
-    Webhook,
-    DripError,
+    Customer,
+    Drip,
     DripAPIError,
-    DripAuthenticationError,
-    DripValidationError,
+    DripError,
+    format_usdc_amount,
     generate_idempotency_key,
     generate_nonce,
     normalize_address,
     parse_usdc_amount,
-    format_usdc_amount,
     verify_webhook_signature,
 )
-
 
 # Test configuration
 API_BASE_URL = "https://api.drip.dev/v1"
@@ -492,7 +486,7 @@ class TestComplexIntegration:
             assert len(flushes) == 1  # on_flush callback was called
             assert meter.total < 500  # Should have flushed and reset
 
-            print(f"✓ Auto-flush triggered at threshold")
+            print("✓ Auto-flush triggered at threshold")
 
     # ==================== Concurrent Operations ====================
 
@@ -658,7 +652,7 @@ class TestComplexIntegration:
         # Test getting non-existent customer
         try:
             client.get_customer("non-existent-customer-id")
-            assert False, "Should have raised an error"
+            raise AssertionError("Should have raised an error")
         except (DripAPIError, DripError):
             pass  # Expected
 
@@ -744,7 +738,7 @@ class TestComplexIntegration:
             ("assistant_response", 400),
         ]
 
-        for event_type, tokens in usage_events:
+        for _event_type, tokens in usage_events:
             meter.add_sync(tokens)
             time.sleep(0.001)  # Small delay to simulate real usage
 

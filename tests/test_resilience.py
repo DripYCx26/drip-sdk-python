@@ -2,31 +2,28 @@
 Tests for the resilience module: rate limiting, retry, circuit breaker, metrics.
 """
 
-import asyncio
 import time
 from concurrent.futures import ThreadPoolExecutor
-from unittest.mock import Mock
 
 import pytest
 
 from drip import (
-    RateLimiter,
-    RateLimiterConfig,
-    RetryConfig,
-    RetryExhausted,
-    with_retry,
-    with_retry_async,
-    calculate_backoff,
     CircuitBreaker,
     CircuitBreakerConfig,
     CircuitBreakerOpen,
     CircuitState,
     MetricsCollector,
+    RateLimiter,
+    RateLimiterConfig,
     RequestMetrics,
     ResilienceConfig,
     ResilienceManager,
+    RetryConfig,
+    RetryExhausted,
+    calculate_backoff,
+    with_retry,
+    with_retry_async,
 )
-
 
 # =============================================================================
 # Rate Limiter Tests
@@ -323,7 +320,7 @@ class TestCircuitBreaker:
         @cb
         def may_fail(should_fail: bool):
             if should_fail:
-                raise Exception("failed")
+                raise RuntimeError("failed")
             return "success"
 
         # Successful calls
@@ -331,9 +328,9 @@ class TestCircuitBreaker:
         assert may_fail(False) == "success"
 
         # Failing calls
-        with pytest.raises(Exception):
+        with pytest.raises(RuntimeError):
             may_fail(True)
-        with pytest.raises(Exception):
+        with pytest.raises(RuntimeError):
             may_fail(True)
 
         # Circuit should be open now
@@ -501,11 +498,11 @@ class TestResilienceManager:
         manager = ResilienceManager(config)
 
         def always_fails():
-            raise Exception("failed")
+            raise RuntimeError("failed")
 
         # Trigger circuit breaker
         for _ in range(2):
-            with pytest.raises(Exception):
+            with pytest.raises(RuntimeError):
                 manager.execute(always_fails)
 
         # Circuit should be open

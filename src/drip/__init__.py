@@ -64,9 +64,6 @@ __version__ = "1.0.0"
 # Main client classes
 from .client import AsyncDrip, Drip
 
-# StreamMeter
-from .stream import StreamMeter, StreamMeterFlushResult, StreamMeterOptions
-
 # Error types
 from .errors import (
     DripAPIError,
@@ -153,6 +150,33 @@ from .models import (
     X402PaymentRequest,
 )
 
+# Resilience patterns
+from .resilience import (
+    # Circuit Breaker
+    CircuitBreaker,
+    CircuitBreakerConfig,
+    CircuitBreakerOpen,
+    CircuitState,
+    # Metrics
+    MetricsCollector,
+    # Rate Limiter
+    RateLimiter,
+    RateLimiterConfig,
+    RequestMetrics,
+    # Combined Manager
+    ResilienceConfig,
+    ResilienceManager,
+    # Retry
+    RetryConfig,
+    RetryExhausted,
+    calculate_backoff,
+    with_retry,
+    with_retry_async,
+)
+
+# StreamMeter
+from .stream import StreamMeter, StreamMeterFlushResult, StreamMeterOptions
+
 # Utility functions
 from .utils import (
     current_timestamp,
@@ -164,30 +188,6 @@ from .utils import (
     normalize_address,
     parse_usdc_amount,
     verify_webhook_signature,
-)
-
-# Resilience patterns
-from .resilience import (
-    # Rate Limiter
-    RateLimiter,
-    RateLimiterConfig,
-    # Retry
-    RetryConfig,
-    RetryExhausted,
-    with_retry,
-    with_retry_async,
-    calculate_backoff,
-    # Circuit Breaker
-    CircuitBreaker,
-    CircuitBreakerConfig,
-    CircuitBreakerOpen,
-    CircuitState,
-    # Metrics
-    MetricsCollector,
-    RequestMetrics,
-    # Combined Manager
-    ResilienceConfig,
-    ResilienceManager,
 )
 
 __all__ = [
