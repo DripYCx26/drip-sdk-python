@@ -65,7 +65,9 @@ from .utils import generate_idempotency_key, verify_webhook_signature
 T = TypeVar("T")
 
 # Default retry configuration
-DEFAULT_RETRY_CONFIG = RetryOptions(max_attempts=3, base_delay_ms=100, max_delay_ms=5000)
+DEFAULT_RETRY_CONFIG = RetryOptions(
+    max_attempts=3, baseDelayMs=100, maxDelayMs=5000
+)
 
 
 def _is_retryable_error(error: Exception) -> bool:
@@ -78,7 +80,7 @@ def _is_retryable_error(error: Exception) -> bool:
     if hasattr(error, "status_code"):
         status_code = error.status_code
         # Retry on 5xx, 408 (timeout), 429 (rate limit)
-        return status_code >= 500 or status_code == 408 or status_code == 429
+        return bool(status_code >= 500 or status_code == 408 or status_code == 429)
 
     return False
 
@@ -237,6 +239,7 @@ class Drip:
         self._timeout = timeout or self.DEFAULT_TIMEOUT
 
         # Setup resilience manager
+        self._resilience: ResilienceManager | None
         if resilience is True:
             self._resilience = ResilienceManager(ResilienceConfig.default())
         elif isinstance(resilience, ResilienceConfig):
@@ -430,7 +433,7 @@ class Drip:
 
             error = create_api_error_from_response(response.status_code, body)
             # Add status_code for resilience retry logic
-            error.status_code = response.status_code  # type: ignore[attr-defined]
+            error.status_code = response.status_code
             raise error
 
         # Parse successful response
@@ -799,7 +802,7 @@ class Drip:
         return WrapApiCallResult(
             result=result,
             charge=charge,
-            idempotency_key=key,
+            idempotencyKey=key,
         )
 
     # =========================================================================
@@ -1546,6 +1549,7 @@ class AsyncDrip:
         self._timeout = timeout or self.DEFAULT_TIMEOUT
 
         # Setup resilience manager
+        self._resilience: ResilienceManager | None
         if resilience is True:
             self._resilience = ResilienceManager(ResilienceConfig.default())
         elif isinstance(resilience, ResilienceConfig):
@@ -1711,7 +1715,7 @@ class AsyncDrip:
 
             error = create_api_error_from_response(response.status_code, body)
             # Add status_code for resilience retry logic
-            error.status_code = response.status_code  # type: ignore[attr-defined]
+            error.status_code = response.status_code
             raise error
 
         if response.status_code == 204:
@@ -1978,7 +1982,7 @@ class AsyncDrip:
         return WrapApiCallResult(
             result=result,
             charge=charge,
-            idempotency_key=key,
+            idempotencyKey=key,
         )
 
     # =========================================================================

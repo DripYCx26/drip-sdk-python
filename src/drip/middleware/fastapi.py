@@ -70,7 +70,7 @@ def _ensure_fastapi() -> None:
         )
 
 
-class DripMiddleware(StarletteBaseMiddleware):  # type: ignore[misc]
+class DripMiddleware(StarletteBaseMiddleware):
     """
     FastAPI/Starlette middleware for automatic Drip billing.
 
