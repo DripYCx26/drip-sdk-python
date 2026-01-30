@@ -11,11 +11,11 @@ on:
       target:
         description: 'Publish target'
         required: true
-        default: 'testpypi'
+        default: 'pypi'
         type: choice
         options:
-          - testpypi
           - pypi
+          - testpypi
 
 jobs:
   test:
