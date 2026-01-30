@@ -109,9 +109,11 @@ def mock_balance_response(customer_id: str) -> dict[str, Any]:
     """Generate a mock BalanceResult response."""
     return {
         "customerId": customer_id,
-        "balanceUSDC": "1000000",
-        "balanceToken": "1000000000000000000",
-        "lastUpdated": "2024-01-01T00:00:00Z",
+        "onchainAddress": f"0x{'a' * 40}",
+        "balanceUsdc": "1000.00",
+        "pendingChargesUsdc": "50.00",
+        "availableUsdc": "950.00",
+        "lastSyncedAt": "2024-01-01T00:00:00Z",
     }
 
 
