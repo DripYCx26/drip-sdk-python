@@ -65,9 +65,7 @@ from .utils import generate_idempotency_key, verify_webhook_signature
 T = TypeVar("T")
 
 # Default retry configuration
-DEFAULT_RETRY_CONFIG = RetryOptions(
-    max_attempts=3, baseDelayMs=100, maxDelayMs=5000
-)
+DEFAULT_RETRY_CONFIG = RetryOptions(max_attempts=3, base_delay_ms=100, max_delay_ms=5000)
 
 
 def _is_retryable_error(error: Exception) -> bool:
@@ -80,7 +78,7 @@ def _is_retryable_error(error: Exception) -> bool:
     if hasattr(error, "status_code"):
         status_code = error.status_code
         # Retry on 5xx, 408 (timeout), 429 (rate limit)
-        return bool(status_code >= 500 or status_code == 408 or status_code == 429)
+        return status_code >= 500 or status_code == 408 or status_code == 429
 
     return False
 
@@ -239,7 +237,6 @@ class Drip:
         self._timeout = timeout or self.DEFAULT_TIMEOUT
 
         # Setup resilience manager
-        self._resilience: ResilienceManager | None
         if resilience is True:
             self._resilience = ResilienceManager(ResilienceConfig.default())
         elif isinstance(resilience, ResilienceConfig):
@@ -433,7 +430,7 @@ class Drip:
 
             error = create_api_error_from_response(response.status_code, body)
             # Add status_code for resilience retry logic
-            error.status_code = response.status_code
+            error.status_code = response.status_code  # type: ignore[attr-defined]
             raise error
 
         # Parse successful response
@@ -473,14 +470,6 @@ class Drip:
     def _delete(self, path: str) -> dict[str, Any]:
         """Make a DELETE request."""
         return self._request("DELETE", path)
-
-    def _patch(
-        self,
-        path: str,
-        json: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        """Make a PATCH request."""
-        return self._request("PATCH", path, json=json)
 
     # =========================================================================
     # Customer Management
@@ -591,7 +580,7 @@ class Drip:
         """
         body: dict[str, Any] = {
             "customerId": customer_id,
-            "usageType": meter,
+            "meter": meter,
             "quantity": quantity,
         }
 
@@ -600,7 +589,7 @@ class Drip:
         if metadata:
             body["metadata"] = metadata
 
-        response = self._post("/usage", json=body)
+        response = self._post("/charges", json=body)
         return ChargeResult.model_validate(response)
 
     def get_charge(self, charge_id: str) -> Charge:
@@ -810,7 +799,7 @@ class Drip:
         return WrapApiCallResult(
             result=result,
             charge=charge,
-            idempotencyKey=key,
+            idempotency_key=key,
         )
 
     # =========================================================================
@@ -1225,7 +1214,7 @@ class Drip:
         if metadata:
             body["metadata"] = metadata
 
-        response = self._patch(f"/runs/{run_id}", json=body)
+        response = self._post(f"/runs/{run_id}/end", json=body)
         return EndRunResult.model_validate(response)
 
     def emit_event(
@@ -1289,7 +1278,7 @@ class Drip:
         if metadata:
             body["metadata"] = metadata
 
-        response = self._post("/run-events", json=body)
+        response = self._post("/events", json=body)
         return EventResult.model_validate(response)
 
     def emit_events_batch(
@@ -1557,7 +1546,6 @@ class AsyncDrip:
         self._timeout = timeout or self.DEFAULT_TIMEOUT
 
         # Setup resilience manager
-        self._resilience: ResilienceManager | None
         if resilience is True:
             self._resilience = ResilienceManager(ResilienceConfig.default())
         elif isinstance(resilience, ResilienceConfig):
@@ -1723,7 +1711,7 @@ class AsyncDrip:
 
             error = create_api_error_from_response(response.status_code, body)
             # Add status_code for resilience retry logic
-            error.status_code = response.status_code
+            error.status_code = response.status_code  # type: ignore[attr-defined]
             raise error
 
         if response.status_code == 204:
@@ -1762,14 +1750,6 @@ class AsyncDrip:
     async def _delete(self, path: str) -> dict[str, Any]:
         """Make an async DELETE request."""
         return await self._request("DELETE", path)
-
-    async def _patch(
-        self,
-        path: str,
-        json: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        """Make an async PATCH request."""
-        return await self._request("PATCH", path, json=json)
 
     # =========================================================================
     # Customer Management
@@ -1830,7 +1810,7 @@ class AsyncDrip:
         """Create a charge for usage."""
         body: dict[str, Any] = {
             "customerId": customer_id,
-            "usageType": meter,
+            "meter": meter,
             "quantity": quantity,
         }
 
@@ -1839,7 +1819,7 @@ class AsyncDrip:
         if metadata:
             body["metadata"] = metadata
 
-        response = await self._post("/usage", json=body)
+        response = await self._post("/charges", json=body)
         return ChargeResult.model_validate(response)
 
     async def get_charge(self, charge_id: str) -> Charge:
@@ -1998,7 +1978,7 @@ class AsyncDrip:
         return WrapApiCallResult(
             result=result,
             charge=charge,
-            idempotencyKey=key,
+            idempotency_key=key,
         )
 
     # =========================================================================
@@ -2277,7 +2257,7 @@ class AsyncDrip:
         if metadata:
             body["metadata"] = metadata
 
-        response = await self._patch(f"/runs/{run_id}", json=body)
+        response = await self._post(f"/runs/{run_id}/end", json=body)
         return EndRunResult.model_validate(response)
 
     async def emit_event(
@@ -2322,7 +2302,7 @@ class AsyncDrip:
         if metadata:
             body["metadata"] = metadata
 
-        response = await self._post("/run-events", json=body)
+        response = await self._post("/events", json=body)
         return EventResult.model_validate(response)
 
     async def emit_events_batch(

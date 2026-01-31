@@ -424,7 +424,8 @@ class CircuitBreaker:
         with self._lock:
             self._check_state_transition()
 
-            return self._state in (CircuitState.CLOSED, CircuitState.HALF_OPEN)
+            # Allow requests if CLOSED or HALF_OPEN (test request), deny if OPEN
+            return self._state != CircuitState.OPEN
 
     def get_time_until_retry(self) -> float:
         """Get seconds until circuit transitions to half-open."""

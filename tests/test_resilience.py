@@ -320,7 +320,7 @@ class TestCircuitBreaker:
         @cb
         def may_fail(should_fail: bool):
             if should_fail:
-                raise RuntimeError("failed")
+                raise Exception("failed")
             return "success"
 
         # Successful calls
@@ -328,9 +328,9 @@ class TestCircuitBreaker:
         assert may_fail(False) == "success"
 
         # Failing calls
-        with pytest.raises(RuntimeError):
+        with pytest.raises(Exception, match="failed"):
             may_fail(True)
-        with pytest.raises(RuntimeError):
+        with pytest.raises(Exception, match="failed"):
             may_fail(True)
 
         # Circuit should be open now
@@ -498,11 +498,11 @@ class TestResilienceManager:
         manager = ResilienceManager(config)
 
         def always_fails():
-            raise RuntimeError("failed")
+            raise Exception("failed")
 
         # Trigger circuit breaker
         for _ in range(2):
-            with pytest.raises(RuntimeError):
+            with pytest.raises(Exception, match="failed"):
                 manager.execute(always_fails)
 
         # Circuit should be open

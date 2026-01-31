@@ -59,12 +59,9 @@ Environment Variables:
     DRIP_API_URL: Custom API base URL (defaults to https://api.drip.dev/v1)
 """
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 
-# Main client classes
 from .client import AsyncDrip, Drip
-
-# Error types
 from .errors import (
     DripAPIError,
     DripAuthenticationError,
@@ -76,50 +73,37 @@ from .errors import (
     DripRateLimitError,
     DripValidationError,
 )
-
-# Models
 from .models import (
-    # Customer
     BalanceResult,
-    # Charges
     Charge,
     ChargeInfo,
     ChargeParams,
     ChargeResult,
-    # Enums
     ChargeStatus,
     ChargeStatusResult,
-    # Checkout
     CheckoutParams,
     CheckoutResult,
-    # Cost Estimation
     CostEstimateLineItem,
     CostEstimateResponse,
     CreateCustomerParams,
-    # Webhooks
     CreateWebhookParams,
     CreateWebhookResponse,
-    # Workflows & Runs
     CreateWorkflowParams,
     Customer,
     CustomerStatus,
     DeleteWebhookResponse,
-    # Configuration
     DripConfig,
     EmitEventParams,
     EmitEventsBatchResult,
     EndRunParams,
     EndRunResult,
     EventResult,
-    # Cost Estimation
     HypotheticalUsageItem,
-    # Utilities
     IdempotencyKeyParams,
     ListChargesOptions,
     ListChargesResponse,
     ListCustomersOptions,
     ListCustomersResponse,
-    # Meters
     ListMetersResponse,
     ListWebhooksResponse,
     ListWorkflowsResponse,
@@ -128,7 +112,6 @@ from .models import (
     RecordRunEvent,
     RecordRunParams,
     RecordRunResult,
-    # Retry Options
     RetryOptions,
     RotateWebhookSecretResponse,
     RunResult,
@@ -137,47 +120,33 @@ from .models import (
     StartRunParams,
     TestWebhookResponse,
     TimelineEvent,
-    # Track usage (no billing)
     TrackUsageResult,
     Webhook,
     WebhookEventType,
     WebhookStats,
     Workflow,
-    # Wrap API Call
     WrapApiCallResult,
-    # x402
     X402PaymentProof,
     X402PaymentRequest,
 )
-
-# Resilience patterns
 from .resilience import (
-    # Circuit Breaker
     CircuitBreaker,
     CircuitBreakerConfig,
     CircuitBreakerOpen,
     CircuitState,
-    # Metrics
     MetricsCollector,
-    # Rate Limiter
     RateLimiter,
     RateLimiterConfig,
     RequestMetrics,
-    # Combined Manager
     ResilienceConfig,
     ResilienceManager,
-    # Retry
     RetryConfig,
     RetryExhausted,
     calculate_backoff,
     with_retry,
     with_retry_async,
 )
-
-# StreamMeter
 from .stream import StreamMeter, StreamMeterFlushResult, StreamMeterOptions
-
-# Utility functions
 from .utils import (
     current_timestamp,
     current_timestamp_ms,

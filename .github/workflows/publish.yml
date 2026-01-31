@@ -8,14 +8,6 @@ on:
       version:
         description: 'Version to publish (e.g., 1.0.1)'
         required: false
-      target:
-        description: 'Publish target'
-        required: true
-        default: 'pypi'
-        type: choice
-        options:
-          - pypi
-          - testpypi
 
 jobs:
   test:
@@ -72,16 +64,7 @@ jobs:
       - name: Check package
         run: twine check dist/*
 
-      - name: Publish to TestPyPI
-        if: github.event.inputs.target == 'testpypi'
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          repository-url: https://test.pypi.org/legacy/
-          verbose: true
-          # Configure trusted publishing at: https://test.pypi.org/manage/project/drip-sdk/settings/publishing/
-
       - name: Publish to PyPI
-        if: github.event.inputs.target == 'pypi' || github.event_name == 'release'
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           # Uses trusted publishing (OIDC) - no API token needed
