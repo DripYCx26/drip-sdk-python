@@ -318,10 +318,15 @@ class CreateWebhookParams(BaseModel):
 class WebhookStats(BaseModel):
     """Webhook delivery statistics."""
 
-    total_deliveries: int = Field(alias="totalDeliveries")
-    successful_deliveries: int = Field(alias="successfulDeliveries")
-    failed_deliveries: int = Field(alias="failedDeliveries")
-    last_delivery_at: str | None = Field(alias="lastDeliveryAt")
+    # Support both API formats
+    total: int | None = Field(default=None)
+    total_deliveries: int | None = Field(default=None, alias="totalDeliveries")
+    delivered: int | None = Field(default=None)
+    successful_deliveries: int | None = Field(default=None, alias="successfulDeliveries")
+    failed: int | None = Field(default=None)
+    failed_deliveries: int | None = Field(default=None, alias="failedDeliveries")
+    pending: int | None = Field(default=None)
+    last_delivery_at: str | None = Field(default=None, alias="lastDeliveryAt")
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -333,9 +338,9 @@ class Webhook(BaseModel):
     url: str
     events: list[str]
     description: str | None = None
-    is_active: bool = Field(alias="isActive")
+    is_active: bool = Field(default=True, alias="isActive")
     created_at: str = Field(alias="createdAt")
-    updated_at: str = Field(alias="updatedAt")
+    updated_at: str | None = Field(default=None, alias="updatedAt")
     stats: WebhookStats | None = None
 
     model_config = ConfigDict(populate_by_name=True)
@@ -358,8 +363,9 @@ class ListWebhooksResponse(BaseModel):
 class DeleteWebhookResponse(BaseModel):
     """Response from deleting a webhook."""
 
-    message: str
-    deleted: bool
+    message: str | None = Field(default=None)
+    deleted: bool | None = Field(default=None)
+    success: bool | None = Field(default=None)
 
 
 class TestWebhookResponse(BaseModel):
