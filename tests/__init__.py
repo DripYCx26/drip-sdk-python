@@ -1,1 +1,0 @@
-"""Drip SDK test suite."""
