@@ -21,6 +21,7 @@ class ChargeStatus(str, Enum):
     """Status of a charge."""
 
     PENDING = "PENDING"
+    PENDING_SETTLEMENT = "PENDING_SETTLEMENT"
     SUBMITTED = "SUBMITTED"
     CONFIRMED = "CONFIRMED"
     FAILED = "FAILED"
@@ -116,8 +117,8 @@ class Customer(BaseModel):
     """Customer record."""
 
     id: str
-    business_id: str = Field(alias="businessId")
-    external_customer_id: str | None = Field(alias="externalCustomerId")
+    business_id: str | None = Field(default=None, alias="businessId")
+    external_customer_id: str | None = Field(default=None, alias="externalCustomerId")
     onchain_address: str = Field(alias="onchainAddress")
     metadata: dict[str, Any] | None = None
     created_at: str = Field(alias="createdAt")
@@ -238,12 +239,12 @@ class Charge(BaseModel):
     usage_event: ChargeUsageEvent = Field(alias="usageEvent")
     amount_usdc: str = Field(alias="amountUsdc")
     amount_token: str = Field(alias="amountToken")
-    tx_hash: str | None = Field(alias="txHash")
-    block_number: str | None = Field(alias="blockNumber")
+    tx_hash: str | None = Field(default=None, alias="txHash")
+    block_number: str | None = Field(default=None, alias="blockNumber")
     status: ChargeStatus
-    failure_reason: str | None = Field(alias="failureReason")
+    failure_reason: str | None = Field(default=None, alias="failureReason")
     created_at: str = Field(alias="createdAt")
-    confirmed_at: str | None = Field(alias="confirmedAt")
+    confirmed_at: str | None = Field(default=None, alias="confirmedAt")
 
     model_config = ConfigDict(populate_by_name=True)
 
