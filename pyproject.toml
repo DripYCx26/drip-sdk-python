@@ -56,12 +56,8 @@ all = [
     "langchain-core>=0.1.0",
 ]
 dev = [
-    "pytest>=7.0.0",
-    "pytest-asyncio>=0.21.0",
-    "pytest-cov>=4.0.0",
     "mypy>=1.0.0",
     "ruff>=0.1.0",
-    "respx>=0.20.0",
 ]
 
 [project.urls]
@@ -75,7 +71,6 @@ packages = ["src/drip"]
 [tool.hatch.build.targets.sdist]
 include = [
     "/src",
-    "/tests",
 ]
 
 [tool.mypy]
@@ -121,15 +116,7 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 # Callback handlers must match interface signatures (unused args expected)
 "src/drip/integrations/langchain.py" = ["ARG002"]
-# Test mocks are injected by decorators
-"tests/test_langchain.py" = ["ARG002"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["drip"]
 
-[tool.pytest.ini_options]
-asyncio_mode = "auto"
-testpaths = ["tests"]
-python_files = ["test_*.py"]
-python_functions = ["test_*"]
-addopts = "-v --tb=short"
