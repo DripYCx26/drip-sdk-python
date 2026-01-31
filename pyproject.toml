@@ -59,6 +59,14 @@ dev = [
     "mypy>=1.0.0",
     "ruff>=0.1.0",
 ]
+test = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=4.0.0",
+    "pytest-timeout>=2.0.0",
+    "respx>=0.20.0",
+    "types-flask>=1.1.0",
+]
 
 [project.urls]
 Homepage = "https://drip.dev"
@@ -120,3 +128,25 @@ ignore = [
 [tool.ruff.lint.isort]
 known-first-party = ["drip"]
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+]
+
+[tool.coverage.run]
+source = ["src/drip"]
+branch = true
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "\\.\\.\\.",
+]
