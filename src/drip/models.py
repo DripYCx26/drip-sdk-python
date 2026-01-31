@@ -20,12 +20,13 @@ from pydantic import BaseModel, ConfigDict, Field
 class ChargeStatus(str, Enum):
     """Status of a charge."""
 
-    PENDING = "PENDING"
-    PENDING_SETTLEMENT = "PENDING_SETTLEMENT"
-    SUBMITTED = "SUBMITTED"
-    CONFIRMED = "CONFIRMED"
-    FAILED = "FAILED"
-    REFUNDED = "REFUNDED"
+    PENDING_SETTLEMENT = "PENDING_SETTLEMENT"  # Recorded off-chain, awaiting batch settlement
+    PENDING = "PENDING"  # Settlement tx submitted but not confirmed
+    CONFIRMED = "CONFIRMED"  # Transaction confirmed on-chain
+    FAILED = "FAILED"  # Transaction failed
+    REFUNDED = "REFUNDED"  # Charge was refunded
+    VOIDED = "VOIDED"  # Charge voided before settlement
+    ADJUSTED = "ADJUSTED"  # Charge adjusted (replaced by correction)
 
 
 class CustomerStatus(str, Enum):
@@ -119,7 +120,9 @@ class Customer(BaseModel):
     id: str
     business_id: str | None = Field(default=None, alias="businessId")
     external_customer_id: str | None = Field(default=None, alias="externalCustomerId")
-    onchain_address: str = Field(alias="onchainAddress")
+    onchain_address: str | None = Field(default=None, alias="onchainAddress")
+    is_internal: bool | None = Field(default=None, alias="isInternal")
+    status: CustomerStatus | None = None
     metadata: dict[str, Any] | None = None
     created_at: str = Field(alias="createdAt")
     updated_at: str = Field(alias="updatedAt")
@@ -177,7 +180,7 @@ class ChargeInfo(BaseModel):
     id: str
     amount_usdc: str = Field(alias="amountUsdc")
     amount_token: str = Field(alias="amountToken")
-    tx_hash: str = Field(alias="txHash")
+    tx_hash: str | None = Field(default=None, alias="txHash")
     status: ChargeStatus
 
     model_config = ConfigDict(populate_by_name=True)
@@ -188,7 +191,7 @@ class ChargeResult(BaseModel):
 
     success: bool
     usage_event_id: str = Field(alias="usageEventId")
-    is_replay: bool = Field(alias="isReplay", description="True if idempotent replay")
+    is_duplicate: bool = Field(alias="isDuplicate", description="True if duplicate request matched by idempotencyKey")
     charge: ChargeInfo
 
     model_config = ConfigDict(populate_by_name=True)
@@ -212,8 +215,8 @@ class ChargeCustomer(BaseModel):
     """Customer info within a Charge."""
 
     id: str
-    onchain_address: str = Field(alias="onchainAddress")
-    external_customer_id: str | None = Field(alias="externalCustomerId")
+    onchain_address: str | None = Field(default=None, alias="onchainAddress")
+    external_customer_id: str | None = Field(default=None, alias="externalCustomerId")
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -318,15 +321,10 @@ class CreateWebhookParams(BaseModel):
 class WebhookStats(BaseModel):
     """Webhook delivery statistics."""
 
-    # Support both API formats
-    total: int | None = Field(default=None)
-    total_deliveries: int | None = Field(default=None, alias="totalDeliveries")
-    delivered: int | None = Field(default=None)
-    successful_deliveries: int | None = Field(default=None, alias="successfulDeliveries")
-    failed: int | None = Field(default=None)
-    failed_deliveries: int | None = Field(default=None, alias="failedDeliveries")
-    pending: int | None = Field(default=None)
-    last_delivery_at: str | None = Field(default=None, alias="lastDeliveryAt")
+    total_deliveries: int = Field(alias="totalDeliveries")
+    successful_deliveries: int = Field(alias="successfulDeliveries")
+    failed_deliveries: int = Field(alias="failedDeliveries")
+    last_delivery_at: str | None = Field(alias="lastDeliveryAt")
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -338,9 +336,9 @@ class Webhook(BaseModel):
     url: str
     events: list[str]
     description: str | None = None
-    is_active: bool = Field(default=True, alias="isActive")
+    is_active: bool = Field(alias="isActive")
     created_at: str = Field(alias="createdAt")
-    updated_at: str | None = Field(default=None, alias="updatedAt")
+    updated_at: str = Field(alias="updatedAt")
     stats: WebhookStats | None = None
 
     model_config = ConfigDict(populate_by_name=True)
@@ -363,9 +361,8 @@ class ListWebhooksResponse(BaseModel):
 class DeleteWebhookResponse(BaseModel):
     """Response from deleting a webhook."""
 
-    message: str | None = Field(default=None)
-    deleted: bool | None = Field(default=None)
-    success: bool | None = Field(default=None)
+    message: str
+    deleted: bool
 
 
 class TestWebhookResponse(BaseModel):
@@ -794,7 +791,7 @@ class CostEstimateLineItem(BaseModel):
 class CostEstimateResponse(BaseModel):
     """Response from cost estimation."""
 
-    business_id: str = Field(alias="businessId", description="Business ID")
+    business_id: str | None = Field(default=None, alias="businessId", description="Business ID")
     customer_id: str | None = Field(
         default=None, alias="customerId", description="Customer ID (if filtered)"
     )

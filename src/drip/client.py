@@ -580,7 +580,7 @@ class Drip:
         """
         body: dict[str, Any] = {
             "customerId": customer_id,
-            "meter": meter,
+            "usageType": meter,
             "quantity": quantity,
         }
 
@@ -589,7 +589,7 @@ class Drip:
         if metadata:
             body["metadata"] = metadata
 
-        response = self._post("/charges", json=body)
+        response = self._post("/usage", json=body)
         return ChargeResult.model_validate(response)
 
     def get_charge(self, charge_id: str) -> Charge:
@@ -1810,7 +1810,7 @@ class AsyncDrip:
         """Create a charge for usage."""
         body: dict[str, Any] = {
             "customerId": customer_id,
-            "meter": meter,
+            "usageType": meter,
             "quantity": quantity,
         }
 
@@ -1819,7 +1819,7 @@ class AsyncDrip:
         if metadata:
             body["metadata"] = metadata
 
-        response = await self._post("/charges", json=body)
+        response = await self._post("/usage", json=body)
         return ChargeResult.model_validate(response)
 
     async def get_charge(self, charge_id: str) -> Charge:

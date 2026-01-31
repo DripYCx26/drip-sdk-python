@@ -153,6 +153,7 @@ from .utils import (
     format_usdc_amount,
     generate_idempotency_key,
     generate_nonce,
+    generate_webhook_signature,
     is_valid_hex,
     normalize_address,
     parse_usdc_amount,
@@ -247,6 +248,7 @@ __all__ = [
     "IdempotencyKeyParams",
     # Utility functions
     "generate_idempotency_key",
+    "generate_webhook_signature",
     "verify_webhook_signature",
     "generate_nonce",
     "current_timestamp",

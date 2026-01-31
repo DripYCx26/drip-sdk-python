@@ -56,16 +56,12 @@ all = [
     "langchain-core>=0.1.0",
 ]
 dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.0.0",
     "mypy>=1.0.0",
     "ruff>=0.1.0",
-]
-test = [
-    "pytest>=8.0.0",
-    "pytest-asyncio>=0.23.0",
-    "pytest-cov>=4.0.0",
-    "pytest-timeout>=2.0.0",
     "respx>=0.20.0",
-    "types-flask>=1.1.0",
 ]
 
 [project.urls]
@@ -79,6 +75,7 @@ packages = ["src/drip"]
 [tool.hatch.build.targets.sdist]
 include = [
     "/src",
+    "/tests",
 ]
 
 [tool.mypy]
@@ -124,29 +121,15 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 # Callback handlers must match interface signatures (unused args expected)
 "src/drip/integrations/langchain.py" = ["ARG002"]
+# Test mocks are injected by decorators
+"tests/test_langchain.py" = ["ARG002"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["drip"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
 asyncio_mode = "auto"
-asyncio_default_fixture_loop_scope = "function"
-filterwarnings = [
-    "ignore::DeprecationWarning",
-]
-markers = [
-    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
-]
-
-[tool.coverage.run]
-source = ["src/drip"]
-branch = true
-
-[tool.coverage.report]
-exclude_lines = [
-    "pragma: no cover",
-    "if TYPE_CHECKING:",
-    "raise NotImplementedError",
-    "\\.\\.\\.",
-]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"

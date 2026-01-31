@@ -102,13 +102,13 @@ class DripContext:
         drip: The Drip client instance.
         customer_id: The resolved customer ID.
         charge: The charge result.
-        is_replay: Whether this was an idempotent replay.
+        is_duplicate: Whether this was a duplicate request matched by idempotencyKey.
     """
 
     drip: Drip | AsyncDrip
     customer_id: str
     charge: ChargeResult
-    is_replay: bool
+    is_duplicate: bool
 
 
 # =============================================================================

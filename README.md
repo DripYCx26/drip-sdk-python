@@ -196,8 +196,8 @@ result = client.charge(
     metadata={"request_id": "req_456"}
 )
 
-# Check if it was a replay (idempotent)
-if result.is_replay:
+# Check if it was a duplicate (idempotent)
+if result.is_duplicate:
     print("Charge was already processed")
 
 # Get charge details
@@ -419,7 +419,7 @@ result = client.charge(
 )
 
 # Safe to retry - won't double charge
-if result.is_replay:
+if result.is_duplicate:
     print("Already processed")
 ```
 

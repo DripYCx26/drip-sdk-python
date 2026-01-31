@@ -83,8 +83,8 @@ class StreamMeterFlushResult:
     charge: ChargeInfo | None
     """The charge result from the API (if quantity > 0)."""
 
-    is_replay: bool
-    """Whether this was an idempotent replay."""
+    is_duplicate: bool
+    """Whether this was a duplicate request matched by idempotencyKey."""
 
 
 class SyncChargeFn(Protocol):
@@ -221,7 +221,7 @@ class StreamMeter:
                 success=True,
                 quantity=0,
                 charge=None,
-                is_replay=False,
+                is_duplicate=False,
             )
 
         # Generate idempotency key for this flush
@@ -251,7 +251,7 @@ class StreamMeter:
             success=charge_result.success,
             quantity=quantity,
             charge=charge_result.charge,
-            is_replay=charge_result.is_replay,
+            is_duplicate=charge_result.is_duplicate,
         )
 
         # Invoke callback if provided
@@ -281,7 +281,7 @@ class StreamMeter:
                 success=True,
                 quantity=0,
                 charge=None,
-                is_replay=False,
+                is_duplicate=False,
             )
 
         # Generate idempotency key for this flush
@@ -309,7 +309,7 @@ class StreamMeter:
             success=charge_result.success,
             quantity=quantity,
             charge=charge_result.charge,
-            is_replay=charge_result.is_replay,
+            is_duplicate=charge_result.is_duplicate,
         )
 
         # Invoke callback if provided

@@ -551,7 +551,7 @@ def process_request_sync(
             mock_charge = ChargeResult.model_validate({
                 "success": True,
                 "usageEventId": "dev_mock_usage",
-                "isReplay": False,
+                "isDuplicate": False,
                 "charge": mock_charge_info,
             })
             client = create_drip_client(config)
@@ -561,7 +561,7 @@ def process_request_sync(
                     drip=client,
                     customer_id="dev_mock_customer",
                     charge=mock_charge,
-                    is_replay=False,
+                    is_duplicate=False,
                 ),
             )
 
@@ -615,7 +615,7 @@ def process_request_sync(
                 drip=client,
                 customer_id=customer_id,
                 charge=charge_result,
-                is_replay=charge_result.is_replay,
+                is_duplicate=charge_result.is_duplicate,
             ),
         )
 
@@ -665,7 +665,7 @@ async def process_request_async(
             mock_charge = ChargeResult.model_validate({
                 "success": True,
                 "usageEventId": "dev_mock_usage",
-                "isReplay": False,
+                "isDuplicate": False,
                 "charge": mock_charge_info,
             })
             client = create_async_drip_client(config)
@@ -675,7 +675,7 @@ async def process_request_async(
                     drip=client,
                     customer_id="dev_mock_customer",
                     charge=mock_charge,
-                    is_replay=False,
+                    is_duplicate=False,
                 ),
             )
 
@@ -730,7 +730,7 @@ async def process_request_async(
                 drip=client,
                 customer_id=customer_id,
                 charge=charge_result,
-                is_replay=charge_result.is_replay,
+                is_duplicate=charge_result.is_duplicate,
             ),
         )
 

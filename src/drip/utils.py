@@ -83,6 +83,7 @@ def verify_webhook_signature(
     payload: str,
     signature: str,
     secret: str,
+    tolerance: int = 300,
 ) -> bool:
     """
     Verify a webhook signature using HMAC-SHA256.
@@ -91,8 +92,9 @@ def verify_webhook_signature(
 
     Args:
         payload: The raw request body as a string.
-        signature: The signature from the X-Drip-Signature header.
+        signature: The signature from the X-Drip-Signature header (format: t=timestamp,v1=hexsignature).
         secret: The webhook secret.
+        tolerance: Maximum age of signature in seconds (default 5 minutes).
 
     Returns:
         True if the signature is valid, False otherwise.
@@ -100,26 +102,83 @@ def verify_webhook_signature(
     Example:
         >>> is_valid = verify_webhook_signature(
         ...     payload='{"event": "charge.succeeded"}',
-        ...     signature="sha256=abc123...",
+        ...     signature="t=1234567890,v1=abc123...",
         ...     secret="whsec_..."
         ... )
     """
     if not payload or not signature or not secret:
         return False
 
-    # Extract the hash from the signature (format: "sha256=<hash>")
-    if signature.startswith("sha256="):
-        signature = signature[7:]
+    try:
+        # Parse signature format: t=timestamp,v1=hexsignature
+        parts = signature.split(",")
+        timestamp_part = next((p for p in parts if p.startswith("t=")), None)
+        signature_part = next((p for p in parts if p.startswith("v1=")), None)
 
-    # Compute the expected signature
-    expected = hmac.new(
+        if not timestamp_part or not signature_part:
+            return False
+
+        timestamp = int(timestamp_part[2:])
+        provided_signature = signature_part[3:]
+
+        # Check timestamp tolerance
+        import time
+
+        now = int(time.time())
+        if abs(now - timestamp) > tolerance:
+            return False
+
+        # Compute expected signature using timestamp.payload format
+        signature_payload = f"{timestamp}.{payload}"
+        expected = hmac.new(
+            key=secret.encode("utf-8"),
+            msg=signature_payload.encode("utf-8"),
+            digestmod=hashlib.sha256,
+        ).hexdigest()
+
+        # Timing-safe comparison
+        return hmac.compare_digest(expected, provided_signature)
+    except (ValueError, AttributeError):
+        return False
+
+
+def generate_webhook_signature(
+    payload: str,
+    secret: str,
+    timestamp: int | None = None,
+) -> str:
+    """
+    Generate a webhook signature for testing purposes.
+
+    Creates a signature in the same format the Drip backend uses,
+    allowing you to test your webhook handling code locally.
+
+    Args:
+        payload: The webhook payload (JSON string).
+        secret: The webhook secret.
+        timestamp: Optional timestamp (defaults to current time).
+
+    Returns:
+        Signature in format: t=timestamp,v1=hexsignature
+
+    Example:
+        >>> signature = generate_webhook_signature(
+        ...     payload='{"type": "charge.succeeded", "data": {...}}',
+        ...     secret="whsec_test123"
+        ... )
+        >>> is_valid = verify_webhook_signature(payload, signature, secret)
+        >>> print(is_valid)  # True
+    """
+    import time
+
+    ts = timestamp if timestamp is not None else int(time.time())
+    signature_payload = f"{ts}.{payload}"
+    sig = hmac.new(
         key=secret.encode("utf-8"),
-        msg=payload.encode("utf-8"),
+        msg=signature_payload.encode("utf-8"),
         digestmod=hashlib.sha256,
     ).hexdigest()
-
-    # Timing-safe comparison
-    return hmac.compare_digest(expected, signature)
+    return f"t={ts},v1={sig}"
 
 
 def generate_nonce(length: int = 32) -> str:
