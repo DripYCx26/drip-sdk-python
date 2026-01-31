@@ -474,6 +474,14 @@ class Drip:
         """Make a DELETE request."""
         return self._request("DELETE", path)
 
+    def _patch(
+        self,
+        path: str,
+        json: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Make a PATCH request."""
+        return self._request("PATCH", path, json=json)
+
     # =========================================================================
     # Customer Management
     # =========================================================================
@@ -583,7 +591,7 @@ class Drip:
         """
         body: dict[str, Any] = {
             "customerId": customer_id,
-            "meter": meter,
+            "usageType": meter,
             "quantity": quantity,
         }
 
@@ -592,7 +600,7 @@ class Drip:
         if metadata:
             body["metadata"] = metadata
 
-        response = self._post("/charges", json=body)
+        response = self._post("/usage", json=body)
         return ChargeResult.model_validate(response)
 
     def get_charge(self, charge_id: str) -> Charge:
@@ -1217,7 +1225,7 @@ class Drip:
         if metadata:
             body["metadata"] = metadata
 
-        response = self._post(f"/runs/{run_id}/end", json=body)
+        response = self._patch(f"/runs/{run_id}", json=body)
         return EndRunResult.model_validate(response)
 
     def emit_event(
@@ -1281,7 +1289,7 @@ class Drip:
         if metadata:
             body["metadata"] = metadata
 
-        response = self._post("/events", json=body)
+        response = self._post("/run-events", json=body)
         return EventResult.model_validate(response)
 
     def emit_events_batch(
@@ -1755,6 +1763,14 @@ class AsyncDrip:
         """Make an async DELETE request."""
         return await self._request("DELETE", path)
 
+    async def _patch(
+        self,
+        path: str,
+        json: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Make an async PATCH request."""
+        return await self._request("PATCH", path, json=json)
+
     # =========================================================================
     # Customer Management
     # =========================================================================
@@ -1814,7 +1830,7 @@ class AsyncDrip:
         """Create a charge for usage."""
         body: dict[str, Any] = {
             "customerId": customer_id,
-            "meter": meter,
+            "usageType": meter,
             "quantity": quantity,
         }
 
@@ -1823,7 +1839,7 @@ class AsyncDrip:
         if metadata:
             body["metadata"] = metadata
 
-        response = await self._post("/charges", json=body)
+        response = await self._post("/usage", json=body)
         return ChargeResult.model_validate(response)
 
     async def get_charge(self, charge_id: str) -> Charge:
@@ -2261,7 +2277,7 @@ class AsyncDrip:
         if metadata:
             body["metadata"] = metadata
 
-        response = await self._post(f"/runs/{run_id}/end", json=body)
+        response = await self._patch(f"/runs/{run_id}", json=body)
         return EndRunResult.model_validate(response)
 
     async def emit_event(
@@ -2306,7 +2322,7 @@ class AsyncDrip:
         if metadata:
             body["metadata"] = metadata
 
-        response = await self._post("/events", json=body)
+        response = await self._post("/run-events", json=body)
         return EventResult.model_validate(response)
 
     async def emit_events_batch(
