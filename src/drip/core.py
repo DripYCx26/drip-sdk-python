@@ -42,7 +42,7 @@ from __future__ import annotations
 
 import os
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
@@ -53,7 +53,6 @@ from .errors import (
     DripNetworkError,
     create_api_error_from_response,
 )
-
 
 # ============================================================================
 # Configuration Types
@@ -424,7 +423,7 @@ class Drip:
         self._timeout = timeout
         self._client = httpx.Client(timeout=timeout)
 
-    def __enter__(self) -> "Drip":
+    def __enter__(self) -> Drip:
         return self
 
     def __exit__(self, *args: Any) -> None:
@@ -1246,7 +1245,7 @@ class AsyncDrip:
         self._timeout = timeout
         self._client = httpx.AsyncClient(timeout=timeout)
 
-    async def __aenter__(self) -> "AsyncDrip":
+    async def __aenter__(self) -> AsyncDrip:
         return self
 
     async def __aexit__(self, *args: Any) -> None:
