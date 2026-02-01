@@ -27,22 +27,21 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[all]"
-          pip install ruff mypy
-
-      - name: Run linting
-        run: ruff check src
-
-      - name: Run type checking
-        run: mypy src
+          pip install build
 
       - name: Build package
-        run: |
-          pip install build
-          python -m build
+        run: python -m build
 
-      # Tests are run in the monorepo before sync, not here
-      # This allows publishing without test files in the public repo
+      - name: Verify package installs
+        run: pip install dist/*.whl
+
+      - name: Verify imports work
+        run: |
+          python -c "from drip import Drip, AsyncDrip; print('Full SDK imports OK')"
+          python -c "from drip.core import Drip, AsyncDrip; print('Core SDK imports OK')"
+
+      # Strict linting and type checking run in the monorepo
+      # This CI validates the package builds and works correctly
 
   publish:
     needs: build

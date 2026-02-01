@@ -7,49 +7,6 @@ on:
     branches: [main]
 
 jobs:
-  lint:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[all]"
-          pip install ruff
-
-      - name: Run ruff linting
-        run: ruff check src
-
-      - name: Run ruff formatting check
-        run: ruff format --check src
-
-  typecheck:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[all]"
-          pip install mypy
-
-      - name: Run mypy
-        run: mypy src
-
   build:
     runs-on: ubuntu-latest
     strategy:
@@ -72,5 +29,13 @@ jobs:
       - name: Build package
         run: python -m build
 
-      # Tests are run in the monorepo, not in the public repo
-      # This ensures the build works without test files
+      - name: Verify package installs
+        run: pip install dist/*.whl
+
+      - name: Verify imports work
+        run: |
+          python -c "from drip import Drip, AsyncDrip; print('Full SDK imports OK')"
+          python -c "from drip.core import Drip, AsyncDrip; print('Core SDK imports OK')"
+
+      # Tests and strict linting are run in the monorepo
+      # This CI validates the package builds and installs correctly
