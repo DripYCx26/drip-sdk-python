@@ -10,7 +10,7 @@ on:
         required: false
 
 jobs:
-  test:
+  build:
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -27,19 +27,25 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev,all]"
+          pip install -e ".[all]"
+          pip install ruff mypy
 
       - name: Run linting
-        run: ruff check src tests
+        run: ruff check src
 
       - name: Run type checking
         run: mypy src
 
-      - name: Run tests
-        run: pytest --cov=drip --cov-report=term-missing
+      - name: Build package
+        run: |
+          pip install build
+          python -m build
+
+      # Tests are run in the monorepo before sync, not here
+      # This allows publishing without test files in the public repo
 
   publish:
-    needs: test
+    needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: read
