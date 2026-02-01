@@ -1,6 +1,6 @@
 # Drip SDK for Python
 
-Official Python SDK for **Drip** - usage-based billing infrastructure with on-chain settlement.
+Official Python SDK for **Drip** - usage tracking and cost attribution for metered infrastructure.
 
 ## Installation
 
@@ -21,7 +21,111 @@ pip install drip-sdk[flask]
 pip install drip-sdk[all]
 ```
 
-## Quick Start
+## Core SDK (Recommended for Pilots)
+
+For most use cases, import the **Core SDK** - a simplified API focused on two concepts:
+
+1. **Usage Tracking** - Record metered usage events
+2. **Execution Logging** - Log agent runs with detailed event traces
+
+```python
+from drip.core import Drip
+
+# Initialize the client
+client = Drip(api_key="drip_sk_...")
+
+# Verify connection
+client.ping()
+```
+
+### Track Usage
+
+```python
+# Track any metered usage (no billing - just recording)
+client.track_usage(
+    customer_id="cus_123",
+    meter="api_calls",
+    quantity=1,
+    metadata={"endpoint": "/v1/generate", "method": "POST"}
+)
+```
+
+### Record Agent Runs
+
+```python
+# Record a complete agent execution with one call
+result = client.record_run(
+    customer_id="cus_123",
+    workflow="research-agent",
+    events=[
+        {"eventType": "llm.call", "model": "gpt-4", "inputTokens": 500, "outputTokens": 1200},
+        {"eventType": "tool.call", "name": "web-search", "duration": 1500},
+        {"eventType": "llm.call", "model": "gpt-4", "inputTokens": 200, "outputTokens": 800},
+    ],
+    status="COMPLETED"
+)
+
+print(result.summary)
+# Output: "Research Agent: 3 events recorded (2.5s)"
+```
+
+### Async Core SDK
+
+```python
+from drip.core import AsyncDrip
+
+async with AsyncDrip(api_key="drip_sk_...") as client:
+    await client.ping()
+
+    await client.track_usage(
+        customer_id="cus_123",
+        meter="api_calls",
+        quantity=1
+    )
+
+    result = await client.record_run(
+        customer_id="cus_123",
+        workflow="research-agent",
+        events=[...],
+        status="COMPLETED"
+    )
+```
+
+### Core SDK Methods
+
+| Method | Description |
+|--------|-------------|
+| `ping()` | Verify API connection |
+| `create_customer(params)` | Create a customer |
+| `get_customer(customer_id)` | Get customer details |
+| `list_customers(options)` | List all customers |
+| `track_usage(params)` | Record metered usage |
+| `record_run(params)` | Log complete agent run (simplified) |
+| `start_run(params)` | Start execution trace |
+| `emit_event(params)` | Log event within run |
+| `emit_events_batch(params)` | Batch log events |
+| `end_run(run_id, params)` | Complete execution trace |
+| `get_run_timeline(run_id)` | Get execution timeline |
+
+---
+
+## Full SDK
+
+For billing, webhooks, and advanced features, use the full SDK:
+
+```python
+from drip import Drip
+
+client = Drip(api_key="drip_sk_...")
+
+# All Core SDK methods plus:
+# - charge(), get_balance(), get_charge(), list_charges()
+# - create_webhook(), list_webhooks(), delete_webhook()
+# - estimate_from_usage(), estimate_from_hypothetical()
+# - checkout(), and more
+```
+
+## Quick Start (Full SDK)
 
 ```python
 from drip import Drip
@@ -45,7 +149,7 @@ result = client.charge(
 print(f"Charged: {result.charge.amount_usdc} USDC")
 ```
 
-## Async Support
+## Async Support (Full SDK)
 
 ```python
 from drip import AsyncDrip
@@ -161,7 +265,7 @@ def get_customer_from_jwt(request):
 DripMiddleware(app, meter="api_calls", quantity=1, customer_resolver=get_customer_from_jwt)
 ```
 
-## API Reference
+## Full SDK API Reference
 
 ### Customer Management
 
@@ -178,15 +282,27 @@ customer = client.get_customer("cus_123")
 
 # List customers
 result = client.list_customers(status=CustomerStatus.ACTIVE, limit=50)
+```
 
+### Usage Tracking (No Billing)
+
+```python
+# Track usage without creating a charge
+result = client.track_usage(
+    customer_id="cus_123",
+    meter="api_calls",
+    quantity=1,
+    metadata={"endpoint": "/v1/generate"}
+)
+```
+
+### Billing (Full SDK Only)
+
+```python
 # Get balance
 balance = client.get_balance("cus_123")
 print(f"Balance: {balance.balance_usdc} USDC")
-```
 
-### Charging
-
-```python
 # Create a charge
 result = client.charge(
     customer_id="cus_123",
@@ -326,8 +442,35 @@ is_valid = verify_webhook_signature(
 
 ### Agent Run Tracking
 
+The simplest way to log agent runs is with `record_run()`:
+
 ```python
-# Create a workflow
+# Record a complete run in one call (recommended)
+result = client.record_run(
+    customer_id="cus_123",
+    workflow="text-generation",  # Creates workflow if doesn't exist
+    events=[
+        {"eventType": "prompt.received", "quantity": 100, "units": "tokens"},
+        {"eventType": "completion.generated", "quantity": 500, "units": "tokens"},
+        {"eventType": "tool.called", "description": "web_search"},
+    ],
+    status="COMPLETED"
+)
+
+print(f"Run ID: {result.run.id}")
+print(f"Total cost: {result.total_cost_units}")
+```
+
+### Fine-Grained Run Control (Full SDK)
+
+For more control, use the step-by-step API:
+
+```python
+from drip import Drip
+
+client = Drip(api_key="drip_sk_...")
+
+# Create a workflow (only needed once)
 workflow = client.create_workflow(
     name="Text Generation",
     slug="text-generation",
@@ -341,7 +484,7 @@ run = client.start_run(
     correlation_id="trace_456"
 )
 
-# Emit events
+# Emit events as they happen
 event = client.emit_event(
     run_id=run.id,
     event_type="tokens.generated",
@@ -356,25 +499,6 @@ result = client.end_run(run.id, status="COMPLETED")
 # Get timeline
 timeline = client.get_run_timeline(run.id)
 print(f"Total cost: {timeline.totals.total_cost_units}")
-```
-
-### Simplified Record Run API
-
-```python
-# Record a complete run in one call
-result = client.record_run(
-    customer_id="cus_123",
-    workflow="text-generation",  # Creates workflow if doesn't exist
-    events=[
-        {"eventType": "prompt.received", "quantity": 100, "units": "tokens"},
-        {"eventType": "completion.generated", "quantity": 500, "units": "tokens"},
-        {"eventType": "tool.called", "description": "web_search"},
-    ],
-    status="COMPLETED"
-)
-
-print(f"Run ID: {result.run.id}")
-print(f"Total cost: {result.total_cost_units}")
 ```
 
 ### LangChain Integration
