@@ -181,8 +181,7 @@ except DripError as e:
 ## Links
 
 - [Full SDK Documentation](./FULL_SDK.md)
-- [API Documentation](https://docs.drippay.dev)
-- [GitHub](https://github.com/MichaelLevin5908/drip)
+- [API Documentation](https://drippay.dev/api-reference)
 - [PyPI](https://pypi.org/project/drip-sdk/)
 
 ## License
