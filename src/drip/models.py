@@ -51,6 +51,7 @@ class RunStatus(str, Enum):
 class ProductSurface(str, Enum):
     """Product surface type for workflows."""
 
+    API = "API"
     RPC = "RPC"
     WEBHOOK = "WEBHOOK"
     AGENT = "AGENT"

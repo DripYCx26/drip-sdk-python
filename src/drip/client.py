@@ -467,6 +467,14 @@ class Drip:
         """Make a PUT request."""
         return self._request("PUT", path, json=json)
 
+    def _patch(
+        self,
+        path: str,
+        json: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Make a PATCH request."""
+        return self._request("PATCH", path, json=json)
+
     def _delete(self, path: str) -> dict[str, Any]:
         """Make a DELETE request."""
         return self._request("DELETE", path)
@@ -1214,7 +1222,7 @@ class Drip:
         if metadata:
             body["metadata"] = metadata
 
-        response = self._post(f"/runs/{run_id}/end", json=body)
+        response = self._patch(f"/runs/{run_id}", json=body)
         return EndRunResult.model_validate(response)
 
     def emit_event(
@@ -1278,7 +1286,7 @@ class Drip:
         if metadata:
             body["metadata"] = metadata
 
-        response = self._post("/events", json=body)
+        response = self._post("/run-events", json=body)
         return EventResult.model_validate(response)
 
     def emit_events_batch(
@@ -1746,6 +1754,14 @@ class AsyncDrip:
     ) -> dict[str, Any]:
         """Make an async PUT request."""
         return await self._request("PUT", path, json=json)
+
+    async def _patch(
+        self,
+        path: str,
+        json: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Make an async PATCH request."""
+        return await self._request("PATCH", path, json=json)
 
     async def _delete(self, path: str) -> dict[str, Any]:
         """Make an async DELETE request."""
@@ -2257,7 +2273,7 @@ class AsyncDrip:
         if metadata:
             body["metadata"] = metadata
 
-        response = await self._post(f"/runs/{run_id}/end", json=body)
+        response = await self._patch(f"/runs/{run_id}", json=body)
         return EndRunResult.model_validate(response)
 
     async def emit_event(
@@ -2302,7 +2318,7 @@ class AsyncDrip:
         if metadata:
             body["metadata"] = metadata
 
-        response = await self._post("/events", json=body)
+        response = await self._post("/run-events", json=body)
         return EventResult.model_validate(response)
 
     async def emit_events_batch(
