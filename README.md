@@ -4,6 +4,12 @@ Drip is a Python SDK for **usage-based tracking and execution logging** in syste
 
 This **Core SDK** is optimized for pilots: capture usage and run data first, add billing later.
 
+**One line to start tracking:** `drip.track_usage(customer_id, meter, quantity)`
+
+[![PyPI version](https://img.shields.io/pypi/v/drip-sdk.svg)](https://pypi.org/project/drip-sdk/)
+[![Python](https://img.shields.io/pypi/pyversions/drip-sdk.svg)](https://pypi.org/project/drip-sdk/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 ---
 
 ## 60-Second Quickstart (Core SDK)
