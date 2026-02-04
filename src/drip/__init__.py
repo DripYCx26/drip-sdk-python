@@ -62,6 +62,44 @@ Environment Variables:
 __version__ = "1.0.1"
 
 from .client import AsyncDrip, Drip
+
+# ============================================================================
+# Pre-initialized Singleton
+# ============================================================================
+
+_singleton: Drip | None = None
+
+
+def _get_singleton() -> Drip:
+    """Get the singleton Drip client instance."""
+    global _singleton
+    if _singleton is None:
+        _singleton = Drip()  # Reads DRIP_API_KEY from environment
+    return _singleton
+
+
+class _DripProxy:
+    """
+    Lazy proxy for the Drip singleton.
+
+    Allows `from drip import drip` to work without initializing
+    until first use. Reads DRIP_API_KEY from environment variables.
+
+    Example:
+        >>> from drip import drip
+        >>>
+        >>> # One line to track usage
+        >>> drip.track_usage(customer_id="cust_123", meter="api_calls", quantity=1)
+        >>>
+        >>> # One line to charge
+        >>> drip.charge(customer_id="cust_123", meter="api_calls", quantity=1)
+    """
+
+    def __getattr__(self, name: str):
+        return getattr(_get_singleton(), name)
+
+
+drip = _DripProxy()
 from .errors import (
     DripAPIError,
     DripAuthenticationError,
@@ -166,6 +204,8 @@ __all__ = [
     # Client classes
     "Drip",
     "AsyncDrip",
+    # Pre-initialized singleton
+    "drip",
     # StreamMeter
     "StreamMeter",
     "StreamMeterOptions",

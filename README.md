@@ -20,13 +20,33 @@ pip install drip-sdk
 export DRIP_API_KEY=sk_test_...
 ```
 
-### 3. Track usage + execution
+### 3. Track usage (one line)
 
 ```python
-from drip.core import Drip
-import os
+from drip import drip
 
-drip = Drip(api_key=os.environ["DRIP_API_KEY"])
+# Track usage - that's it
+drip.track_usage(customer_id="cust_123", meter="api_calls", quantity=1)
+```
+
+The `drip` singleton reads `DRIP_API_KEY` from your environment automatically.
+
+### Alternative: Explicit Configuration
+
+```python
+from drip import Drip
+
+# Auto-reads DRIP_API_KEY from environment
+client = Drip()
+
+# Or pass config explicitly
+client = Drip(api_key="sk_test_...")
+```
+
+### Full Example
+
+```python
+from drip import drip
 
 # Verify connectivity
 drip.ping()
@@ -44,8 +64,8 @@ drip.record_run(
     customer_id="customer_123",
     workflow="research-agent",
     events=[
-        {"eventType": "llm.call", "model": "gpt-4", "inputTokens": 500, "outputTokens": 1200},
-        {"eventType": "tool.call", "name": "web-search", "duration": 1500},
+        {"event_type": "llm.call", "model": "gpt-4", "input_tokens": 500, "output_tokens": 1200},
+        {"event_type": "tool.call", "name": "web-search", "duration": 1500},
     ],
     status="COMPLETED"
 )
