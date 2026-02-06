@@ -505,13 +505,26 @@ class EventResult(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
 
+class BatchEventItem(BaseModel):
+    """A single event result from batch emission."""
+
+    id: str
+    event_type: str = Field(alias="eventType")
+    is_duplicate: bool = Field(default=False, alias="isDuplicate")
+    skipped: bool | None = None
+    reason: str | None = None
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
 class EmitEventsBatchResult(BaseModel):
     """Result of batch event emission."""
 
     success: bool
     created: int
     duplicates: int
-    events: list[EventResult]
+    skipped: int | None = None
+    events: list[BatchEventItem]
 
 
 class TimelineEventCharge(BaseModel):

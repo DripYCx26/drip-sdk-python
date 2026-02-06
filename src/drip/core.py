@@ -885,55 +885,62 @@ class Drip:
             >>> for event in timeline.timeline:
             ...     print(f"{event.event_type}: {event.quantity}")
         """
-        data = self._request("GET", f"/runs/{run_id}")
+        data = self._request("GET", f"/runs/{run_id}/timeline")
 
-        run_data = data.get("run", data)
+        # Build run info from the timeline response
         run = RunTimelineRun(
-            id=run_data["id"],
-            customer_id=run_data["customerId"],
-            customer_name=run_data.get("customerName"),
-            workflow_id=run_data["workflowId"],
-            workflow_name=run_data.get("workflowName", ""),
-            status=RunStatus(run_data.get("status", "RUNNING")),
-            started_at=run_data.get("startedAt"),
-            ended_at=run_data.get("endedAt"),
-            duration_ms=run_data.get("durationMs"),
-            error_message=run_data.get("errorMessage"),
-            error_code=run_data.get("errorCode"),
-            correlation_id=run_data.get("correlationId"),
-            metadata=run_data.get("metadata"),
+            id=data.get("runId", run_id),
+            customer_id=data.get("customerId", ""),
+            customer_name=data.get("customerName"),
+            workflow_id=data.get("workflowId", ""),
+            workflow_name=data.get("workflowName", ""),
+            status=RunStatus(data.get("status", "RUNNING")),
+            started_at=data.get("startedAt"),
+            ended_at=data.get("endedAt"),
+            duration_ms=data.get("durationMs"),
+            error_message=data.get("errorMessage"),
+            error_code=data.get("errorCode"),
+            correlation_id=data.get("correlationId"),
+            metadata=data.get("metadata"),
         )
 
-        timeline_data = data.get("timeline", [])
+        events_data = data.get("events", [])
         timeline = [
             TimelineEvent(
                 id=e["id"],
-                event_type=e["eventType"],
-                quantity=e.get("quantity", 0),
-                units=e.get("units"),
-                description=e.get("description"),
-                cost_units=e.get("costUnits"),
-                timestamp=e["timestamp"],
+                event_type=e.get("eventType", e.get("actionName", "")),
+                quantity=e.get("quantity", e.get("metadata", {}).get("quantity", 0) if isinstance(e.get("metadata"), dict) else 0),
+                units=e.get("units", e.get("metadata", {}).get("units") if isinstance(e.get("metadata"), dict) else None),
+                description=e.get("description", e.get("explanation")),
+                cost_units=e.get("costUnits", e.get("costUsdc")),
+                timestamp=e.get("timestamp", e.get("createdAt", "")),
                 correlation_id=e.get("correlationId"),
                 parent_event_id=e.get("parentEventId"),
                 charge=e.get("charge"),
             )
-            for e in timeline_data
+            for e in events_data
         ]
 
-        totals_data = data.get("totals", {})
+        summary_data = data.get("summary", {})
         totals = RunTimelineTotals(
-            event_count=totals_data.get("eventCount", 0),
-            total_quantity=totals_data.get("totalQuantity", "0"),
-            total_cost_units=totals_data.get("totalCostUnits", "0"),
-            total_charged_usdc=totals_data.get("totalChargedUsdc", "0"),
+            event_count=summary_data.get("totalEvents", len(events_data)) if isinstance(summary_data, dict) else len(events_data),
+            total_quantity=str(summary_data.get("totalQuantity", "0")) if isinstance(summary_data, dict) else "0",
+            total_cost_units=str(summary_data.get("totalCostUnits", "0")) if isinstance(summary_data, dict) else "0",
+            total_charged_usdc=str(summary_data.get("totalChargedUsdc", "0")) if isinstance(summary_data, dict) else "0",
         )
+
+        summary_str = ""
+        if isinstance(summary_data, dict):
+            total_events = summary_data.get("totalEvents", len(events_data))
+            summary_str = f"{total_events} events"
+        elif isinstance(summary_data, str):
+            summary_str = summary_data
 
         return RunTimeline(
             run=run,
             timeline=timeline,
             totals=totals,
-            summary=data.get("summary", ""),
+            summary=summary_str,
         )
 
     def emit_event(
@@ -944,8 +951,10 @@ class Drip:
         units: str | None = None,
         description: str | None = None,
         cost_units: float | None = None,
+        cost_currency: str | None = None,
         correlation_id: str | None = None,
         parent_event_id: str | None = None,
+        span_id: str | None = None,
         idempotency_key: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> EventResult:
@@ -959,8 +968,10 @@ class Drip:
             units: Human-readable unit label.
             description: Human-readable description.
             cost_units: Cost in abstract units.
+            cost_currency: Currency for cost (e.g., 'USD').
             correlation_id: Correlation ID for tracing.
             parent_event_id: Parent event ID for trace tree.
+            span_id: Span ID for distributed tracing.
             idempotency_key: Idempotency key.
             metadata: Additional metadata.
 
@@ -987,16 +998,20 @@ class Drip:
             payload["description"] = description
         if cost_units is not None:
             payload["costUnits"] = cost_units
+        if cost_currency:
+            payload["costCurrency"] = cost_currency
         if correlation_id:
             payload["correlationId"] = correlation_id
         if parent_event_id:
             payload["parentEventId"] = parent_event_id
+        if span_id:
+            payload["spanId"] = span_id
         if idempotency_key:
             payload["idempotencyKey"] = idempotency_key
         if metadata:
             payload["metadata"] = metadata
 
-        data = self._request("POST", "/events", json=payload)
+        data = self._request("POST", "/run-events", json=payload)
 
         return EventResult(
             id=data["id"],
@@ -1596,8 +1611,10 @@ class AsyncDrip:
         units: str | None = None,
         description: str | None = None,
         cost_units: float | None = None,
+        cost_currency: str | None = None,
         correlation_id: str | None = None,
         parent_event_id: str | None = None,
+        span_id: str | None = None,
         idempotency_key: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> EventResult:
@@ -1611,16 +1628,20 @@ class AsyncDrip:
             payload["description"] = description
         if cost_units is not None:
             payload["costUnits"] = cost_units
+        if cost_currency:
+            payload["costCurrency"] = cost_currency
         if correlation_id:
             payload["correlationId"] = correlation_id
         if parent_event_id:
             payload["parentEventId"] = parent_event_id
+        if span_id:
+            payload["spanId"] = span_id
         if idempotency_key:
             payload["idempotencyKey"] = idempotency_key
         if metadata:
             payload["metadata"] = metadata
 
-        data = await self._request("POST", "/events", json=payload)
+        data = await self._request("POST", "/run-events", json=payload)
 
         return EventResult(
             id=data["id"],

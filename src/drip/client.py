@@ -49,6 +49,9 @@ from .models import (
     RunResult,
     RunTimeline,
     TestWebhookResponse,
+    TimelineEvent,
+    TimelineRunInfo,
+    TimelineTotals,
     TrackUsageResult,
     Webhook,
     Workflow,
@@ -1315,8 +1318,63 @@ class Drip:
         Returns:
             RunTimeline with events and computed totals.
         """
-        response = self._get(f"/runs/{run_id}/timeline")
-        return RunTimeline.model_validate(response)
+        data = self._get(f"/runs/{run_id}/timeline")
+
+        # Build run info from the flat timeline response
+        run = TimelineRunInfo(
+            id=data.get("runId", run_id),
+            customerId=data.get("customerId", ""),
+            customerName=data.get("customerName"),
+            workflowId=data.get("workflowId", ""),
+            workflowName=data.get("workflowName", ""),
+            status=data.get("status", "RUNNING"),
+            startedAt=data.get("startedAt"),
+            endedAt=data.get("endedAt"),
+            durationMs=data.get("durationMs"),
+            errorMessage=data.get("errorMessage"),
+            errorCode=data.get("errorCode"),
+            correlationId=data.get("correlationId"),
+            metadata=data.get("metadata"),
+        )
+
+        # Map events from the V2 timeline format
+        events_data = data.get("events", [])
+        timeline = []
+        for e in events_data:
+            meta = e.get("metadata", {}) if isinstance(e.get("metadata"), dict) else {}
+            timeline.append(TimelineEvent(
+                id=e["id"],
+                eventType=e.get("eventType", e.get("actionName", "")),
+                quantity=meta.get("quantity", 0) if isinstance(meta, dict) else 0,
+                units=meta.get("units") if isinstance(meta, dict) else None,
+                description=e.get("description", e.get("explanation")),
+                costUnits=e.get("costUsdc"),
+                timestamp=e.get("timestamp", e.get("createdAt", "")),
+                correlationId=e.get("correlationId"),
+                parentEventId=e.get("parentEventId"),
+            ))
+
+        # Build totals from the summary object
+        summary_data = data.get("summary", {})
+        totals = TimelineTotals(
+            eventCount=summary_data.get("totalEvents", len(events_data)) if isinstance(summary_data, dict) else len(events_data),
+            totalQuantity=str(summary_data.get("totalQuantity", "0")) if isinstance(summary_data, dict) else "0",
+            totalCostUnits=str(summary_data.get("totalCostUnits", "0")) if isinstance(summary_data, dict) else "0",
+            totalChargedUsdc=str(summary_data.get("totalChargedUsdc", "0")) if isinstance(summary_data, dict) else "0",
+        )
+
+        summary_str = ""
+        if isinstance(summary_data, dict):
+            summary_str = f"{summary_data.get('totalEvents', len(events_data))} events"
+        elif isinstance(summary_data, str):
+            summary_str = summary_data
+
+        return RunTimeline(
+            run=run,
+            timeline=timeline,
+            totals=totals,
+            summary=summary_str,
+        )
 
     # =========================================================================
     # Simplified API: Record Run
@@ -2331,8 +2389,60 @@ class AsyncDrip:
 
     async def get_run_timeline(self, run_id: str) -> RunTimeline:
         """Get the full timeline for a run."""
-        response = await self._get(f"/runs/{run_id}/timeline")
-        return RunTimeline.model_validate(response)
+        data = await self._get(f"/runs/{run_id}/timeline")
+
+        run = TimelineRunInfo(
+            id=data.get("runId", run_id),
+            customerId=data.get("customerId", ""),
+            customerName=data.get("customerName"),
+            workflowId=data.get("workflowId", ""),
+            workflowName=data.get("workflowName", ""),
+            status=data.get("status", "RUNNING"),
+            startedAt=data.get("startedAt"),
+            endedAt=data.get("endedAt"),
+            durationMs=data.get("durationMs"),
+            errorMessage=data.get("errorMessage"),
+            errorCode=data.get("errorCode"),
+            correlationId=data.get("correlationId"),
+            metadata=data.get("metadata"),
+        )
+
+        events_data = data.get("events", [])
+        timeline = []
+        for e in events_data:
+            meta = e.get("metadata", {}) if isinstance(e.get("metadata"), dict) else {}
+            timeline.append(TimelineEvent(
+                id=e["id"],
+                eventType=e.get("eventType", e.get("actionName", "")),
+                quantity=meta.get("quantity", 0) if isinstance(meta, dict) else 0,
+                units=meta.get("units") if isinstance(meta, dict) else None,
+                description=e.get("description", e.get("explanation")),
+                costUnits=e.get("costUsdc"),
+                timestamp=e.get("timestamp", e.get("createdAt", "")),
+                correlationId=e.get("correlationId"),
+                parentEventId=e.get("parentEventId"),
+            ))
+
+        summary_data = data.get("summary", {})
+        totals = TimelineTotals(
+            eventCount=summary_data.get("totalEvents", len(events_data)) if isinstance(summary_data, dict) else len(events_data),
+            totalQuantity=str(summary_data.get("totalQuantity", "0")) if isinstance(summary_data, dict) else "0",
+            totalCostUnits=str(summary_data.get("totalCostUnits", "0")) if isinstance(summary_data, dict) else "0",
+            totalChargedUsdc=str(summary_data.get("totalChargedUsdc", "0")) if isinstance(summary_data, dict) else "0",
+        )
+
+        summary_str = ""
+        if isinstance(summary_data, dict):
+            summary_str = f"{summary_data.get('totalEvents', len(events_data))} events"
+        elif isinstance(summary_data, str):
+            summary_str = summary_data
+
+        return RunTimeline(
+            run=run,
+            timeline=timeline,
+            totals=totals,
+            summary=summary_str,
+        )
 
     # =========================================================================
     # Simplified API
