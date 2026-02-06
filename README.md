@@ -17,7 +17,7 @@ This **Core SDK** is optimized for pilots: capture usage and run data first, add
 ### 1. Install
 
 ```bash
-pip install drip-sdk
+pip install drip-sdk==1.0.1
 ```
 
 ### 2. Set your API key
@@ -103,10 +103,10 @@ print("Usage + run recorded")
 ## Installation Options
 
 ```bash
-pip install drip-sdk           # core only
-pip install drip-sdk[fastapi]  # FastAPI helpers
-pip install drip-sdk[flask]    # Flask helpers
-pip install drip-sdk[all]      # everything
+pip install drip-sdk==1.0.1           # core only
+pip install drip-sdk[fastapi]==1.0.1  # FastAPI helpers
+pip install drip-sdk[flask]==1.0.1    # Flask helpers
+pip install drip-sdk[all]==1.0.1      # everything
 ```
 
 ---
