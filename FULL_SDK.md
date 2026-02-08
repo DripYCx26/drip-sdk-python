@@ -29,7 +29,7 @@ pip install drip-sdk[all]
 ```python
 from drip import Drip
 
-client = Drip(api_key="drip_sk_...")
+client = Drip(api_key="sk_test_...")
 ```
 
 ---
@@ -89,7 +89,7 @@ print(f"Charged: {result.charge.amount_usdc} USDC")
 ```python
 from drip import AsyncDrip
 
-async with AsyncDrip(api_key="drip_sk_...") as client:
+async with AsyncDrip(api_key="sk_test_...") as client:
     customer = await client.create_customer(
         onchain_address="0x1234..."
     )
@@ -186,7 +186,7 @@ print(f"Charged {result.charge.amount_usdc} USDC for {result.quantity} tokens")
 ### Async Streaming
 
 ```python
-async with AsyncDrip(api_key="drip_sk_...") as client:
+async with AsyncDrip(api_key="sk_test_...") as client:
     meter = client.create_stream_meter(
         customer_id="customer_123",
         meter="tokens",
@@ -290,7 +290,7 @@ from drip.integrations.langchain import DripCallbackHandler
 from langchain_openai import ChatOpenAI
 
 handler = DripCallbackHandler(
-    api_key="drip_sk_...",
+    api_key="sk_test_...",
     customer_id="customer_123",
     workflow="chatbot",
 )

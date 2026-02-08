@@ -3,6 +3,26 @@ Drip SDK client.
 
 This module provides the main Drip client class for interacting with
 the Drip API for usage-based billing with on-chain settlement.
+
+Idempotency Keys
+----------------
+Every mutating method (``charge``, ``track_usage``, ``emit_event``)
+accepts an optional ``idempotency_key``. The server uses this key to
+deduplicate requests.
+
+**Auto-generated keys (default):**
+When you omit ``idempotency_key``, the SDK generates a deterministic key
+that is unique per call (a monotonic counter distinguishes rapid identical
+calls) but stable across retries of the same call.
+
+Note: ``wrap_api_call`` generates a time-based key when no explicit
+``idempotency_key`` is provided. Pass your own key if you need
+deterministic deduplication with ``wrap_api_call``.
+
+**When to pass explicit keys:**
+Use your own ``idempotency_key`` for application-level deduplication —
+e.g., ``f"order_{order_id}_charge"`` to guarantee one charge per order
+even across process restarts.
 """
 
 from __future__ import annotations
@@ -10,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import os
 import random
+import threading
 import time
 from collections.abc import Callable
 from datetime import datetime
@@ -84,6 +105,38 @@ def _is_retryable_error(error: Exception) -> bool:
         return status_code >= 500 or status_code == 408 or status_code == 429
 
     return False
+
+
+# Thread-safe atomic counter for idempotency key generation.
+# Each SDK call gets a unique counter value, ensuring that two rapid calls
+# with identical parameters produce different keys. Retries still work
+# because the key is generated once per SDK method call and reused across retries.
+_call_counter_lock = threading.Lock()
+_call_counter = 0
+
+
+def _deterministic_idempotency_key(prefix: str, *components: str | float | None) -> str:
+    """Generate a deterministic, unique idempotency key for each SDK call.
+
+    Combines call parameters with a monotonic counter to produce keys that are:
+    - **Unique per call**: Two rapid calls with identical params get different keys.
+    - **Stable across retries**: Generated once per SDK method invocation.
+    - **Deterministic**: No randomness — reproducible for debugging.
+
+    To override, pass an explicit ``idempotency_key`` to any SDK method.
+    """
+    import hashlib
+
+    global _call_counter  # noqa: PLW0603
+    with _call_counter_lock:
+        _call_counter += 1
+        seq = _call_counter
+
+    parts = [str(c) for c in components if c is not None]
+    parts.append(str(seq))
+    key_input = "|".join(parts)
+    hash_hex = hashlib.sha256(key_input.encode()).hexdigest()[:24]
+    return f"{prefix}_{hash_hex}"
 
 
 def _retry_with_backoff_sync(
@@ -595,8 +648,9 @@ class Drip:
             "quantity": quantity,
         }
 
-        if idempotency_key:
-            body["idempotencyKey"] = idempotency_key
+        body["idempotencyKey"] = idempotency_key or _deterministic_idempotency_key(
+            "chg", customer_id, meter, quantity
+        )
         if metadata:
             body["metadata"] = metadata
 
@@ -698,8 +752,9 @@ class Drip:
             "quantity": quantity,
         }
 
-        if idempotency_key:
-            body["idempotencyKey"] = idempotency_key
+        body["idempotencyKey"] = idempotency_key or _deterministic_idempotency_key(
+            "track", customer_id, meter, quantity
+        )
         if units:
             body["units"] = units
         if description:
@@ -1284,8 +1339,9 @@ class Drip:
             body["parentEventId"] = parent_event_id
         if span_id:
             body["spanId"] = span_id
-        if idempotency_key:
-            body["idempotencyKey"] = idempotency_key
+        body["idempotencyKey"] = idempotency_key or _deterministic_idempotency_key(
+            "evt", run_id, event_type, quantity
+        )
         if metadata:
             body["metadata"] = metadata
 
@@ -1888,8 +1944,9 @@ class AsyncDrip:
             "quantity": quantity,
         }
 
-        if idempotency_key:
-            body["idempotencyKey"] = idempotency_key
+        body["idempotencyKey"] = idempotency_key or _deterministic_idempotency_key(
+            "chg", customer_id, meter, quantity
+        )
         if metadata:
             body["metadata"] = metadata
 
@@ -1948,8 +2005,9 @@ class AsyncDrip:
             "quantity": quantity,
         }
 
-        if idempotency_key:
-            body["idempotencyKey"] = idempotency_key
+        body["idempotencyKey"] = idempotency_key or _deterministic_idempotency_key(
+            "track", customer_id, meter, quantity
+        )
         if units:
             body["units"] = units
         if description:
@@ -2371,8 +2429,9 @@ class AsyncDrip:
             body["parentEventId"] = parent_event_id
         if span_id:
             body["spanId"] = span_id
-        if idempotency_key:
-            body["idempotencyKey"] = idempotency_key
+        body["idempotencyKey"] = idempotency_key or _deterministic_idempotency_key(
+            "evt", run_id, event_type, quantity
+        )
         if metadata:
             body["metadata"] = metadata
 

@@ -23,7 +23,11 @@ pip install drip-sdk==1.0.1
 ### 2. Set your API key
 
 ```bash
+# Secret key — full access (server-side only)
 export DRIP_API_KEY=sk_test_...
+
+# Or public key — usage, customers, billing (safe for client-side)
+export DRIP_API_KEY=pk_test_...
 ```
 
 ### 3. Track usage (one line)
@@ -45,8 +49,11 @@ from drip import Drip
 # Auto-reads DRIP_API_KEY from environment
 client = Drip()
 
-# Or pass config explicitly
+# Or pass config explicitly with a secret key (full access)
 client = Drip(api_key="sk_test_...")
+
+# Or with a public key (limited scope, safe for client-side)
+client = Drip(api_key="pk_test_...")
 ```
 
 ### Full Example
@@ -143,7 +150,7 @@ pip install drip-sdk[all]==1.0.1      # everything
 ```python
 from drip.core import AsyncDrip
 
-async with AsyncDrip(api_key="drip_sk_...") as client:
+async with AsyncDrip(api_key="sk_test_...") as client:
     await client.ping()
 
     await client.track_usage(
