@@ -1451,8 +1451,8 @@ class Drip:
         """
         One-call simplified API for recording a complete agent run.
 
-        This combines workflow creation (if needed), run creation,
-        event emission, and run completion into a single call.
+        This orchestrates workflow resolution, run creation, event emission,
+        and run completion into a single call.
 
         Args:
             customer_id: The customer ID.
@@ -1468,26 +1468,98 @@ class Drip:
         Returns:
             RecordRunResult with run info and event stats.
         """
-        body: dict[str, Any] = {
-            "customerId": customer_id,
-            "workflow": workflow,
-            "events": events,
-            "status": status,
-        }
+        import re
+        start_time = int(time.time() * 1000)
 
-        if error_message:
-            body["errorMessage"] = error_message
-        if error_code:
-            body["errorCode"] = error_code
-        if external_run_id:
-            body["externalRunId"] = external_run_id
-        if correlation_id:
-            body["correlationId"] = correlation_id
-        if metadata:
-            body["metadata"] = metadata
+        # Step 1: Resolve workflow (get or create by slug)
+        workflow_id = workflow
+        workflow_name = workflow
+        if not workflow.startswith("wf_"):
+            try:
+                workflows = self.list_workflows()
+                existing = next(
+                    (w for w in workflows.data if w.slug == workflow or w.id == workflow),
+                    None,
+                )
+                if existing:
+                    workflow_id = existing.id
+                    workflow_name = existing.name
+                else:
+                    pretty_name = re.sub(r"[_-]", " ", workflow).title()
+                    created = self.create_workflow(
+                        name=pretty_name,
+                        slug=workflow,
+                        product_surface="AGENT",
+                    )
+                    workflow_id = created.id
+                    workflow_name = created.name
+            except Exception:
+                workflow_id = workflow
 
-        response = self._post("/runs/record", json=body)
-        return RecordRunResult.model_validate(response)
+        # Step 2: Start the run
+        run = self.start_run(
+            customer_id=customer_id,
+            workflow_id=workflow_id,
+            external_run_id=external_run_id,
+            correlation_id=correlation_id,
+            metadata=metadata,
+        )
+
+        # Step 3: Emit events in batch
+        events_created = 0
+        events_duplicates = 0
+        if events:
+            batch_events = []
+            for i, event in enumerate(events):
+                idem_key = (
+                    f"{external_run_id}:{event.get('eventType', '')}:{i}"
+                    if external_run_id
+                    else _deterministic_idempotency_key(
+                        "run", run.id, event.get("eventType", ""), i
+                    )
+                )
+                batch_events.append({
+                    "runId": run.id,
+                    "eventType": event.get("eventType"),
+                    "quantity": event.get("quantity"),
+                    "units": event.get("units"),
+                    "description": event.get("description"),
+                    "costUnits": event.get("costUnits"),
+                    "metadata": event.get("metadata"),
+                    "idempotencyKey": idem_key,
+                })
+            batch_result = self.emit_events_batch(batch_events)
+            events_created = batch_result.created
+            events_duplicates = batch_result.duplicates
+
+        # Step 4: End the run
+        end_result = self.end_run(
+            run_id=run.id,
+            status=status,
+            error_message=error_message,
+            error_code=error_code,
+        )
+
+        duration_ms = int(time.time() * 1000) - start_time
+        event_summary = f"{events_created} events recorded" if events else "no events"
+        status_icon = {"COMPLETED": "✓", "FAILED": "✗"}.get(status, "○")
+        summary = f"{status_icon} {workflow_name}: {event_summary} ({end_result.duration_ms or duration_ms}ms)"
+
+        return RecordRunResult.model_validate({
+            "run": {
+                "id": run.id,
+                "workflowId": workflow_id,
+                "workflowName": workflow_name,
+                "status": status,
+                "durationMs": end_result.duration_ms,
+            },
+            "events": {
+                "created": events_created,
+                "duplicates": events_duplicates,
+            },
+            "totalCostUnits": end_result.total_cost_units,
+            "summary": summary,
+        })
 
     # =========================================================================
     # Meters
@@ -2520,26 +2592,98 @@ class AsyncDrip:
         metadata: dict[str, Any] | None = None,
     ) -> RecordRunResult:
         """One-call simplified API for recording a complete agent run."""
-        body: dict[str, Any] = {
-            "customerId": customer_id,
-            "workflow": workflow,
-            "events": events,
-            "status": status,
-        }
+        import re
+        start_time = int(time.time() * 1000)
 
-        if error_message:
-            body["errorMessage"] = error_message
-        if error_code:
-            body["errorCode"] = error_code
-        if external_run_id:
-            body["externalRunId"] = external_run_id
-        if correlation_id:
-            body["correlationId"] = correlation_id
-        if metadata:
-            body["metadata"] = metadata
+        # Step 1: Resolve workflow (get or create by slug)
+        workflow_id = workflow
+        workflow_name = workflow
+        if not workflow.startswith("wf_"):
+            try:
+                workflows = await self.list_workflows()
+                existing = next(
+                    (w for w in workflows.data if w.slug == workflow or w.id == workflow),
+                    None,
+                )
+                if existing:
+                    workflow_id = existing.id
+                    workflow_name = existing.name
+                else:
+                    pretty_name = re.sub(r"[_-]", " ", workflow).title()
+                    created = await self.create_workflow(
+                        name=pretty_name,
+                        slug=workflow,
+                        product_surface="AGENT",
+                    )
+                    workflow_id = created.id
+                    workflow_name = created.name
+            except Exception:
+                workflow_id = workflow
 
-        response = await self._post("/runs/record", json=body)
-        return RecordRunResult.model_validate(response)
+        # Step 2: Start the run
+        run = await self.start_run(
+            customer_id=customer_id,
+            workflow_id=workflow_id,
+            external_run_id=external_run_id,
+            correlation_id=correlation_id,
+            metadata=metadata,
+        )
+
+        # Step 3: Emit events in batch
+        events_created = 0
+        events_duplicates = 0
+        if events:
+            batch_events = []
+            for i, event in enumerate(events):
+                idem_key = (
+                    f"{external_run_id}:{event.get('eventType', '')}:{i}"
+                    if external_run_id
+                    else _deterministic_idempotency_key(
+                        "run", run.id, event.get("eventType", ""), i
+                    )
+                )
+                batch_events.append({
+                    "runId": run.id,
+                    "eventType": event.get("eventType"),
+                    "quantity": event.get("quantity"),
+                    "units": event.get("units"),
+                    "description": event.get("description"),
+                    "costUnits": event.get("costUnits"),
+                    "metadata": event.get("metadata"),
+                    "idempotencyKey": idem_key,
+                })
+            batch_result = await self.emit_events_batch(batch_events)
+            events_created = batch_result.created
+            events_duplicates = batch_result.duplicates
+
+        # Step 4: End the run
+        end_result = await self.end_run(
+            run_id=run.id,
+            status=status,
+            error_message=error_message,
+            error_code=error_code,
+        )
+
+        duration_ms = int(time.time() * 1000) - start_time
+        event_summary = f"{events_created} events recorded" if events else "no events"
+        status_icon = {"COMPLETED": "✓", "FAILED": "✗"}.get(status, "○")
+        summary = f"{status_icon} {workflow_name}: {event_summary} ({end_result.duration_ms or duration_ms}ms)"
+
+        return RecordRunResult.model_validate({
+            "run": {
+                "id": run.id,
+                "workflowId": workflow_id,
+                "workflowName": workflow_name,
+                "status": status,
+                "durationMs": end_result.duration_ms,
+            },
+            "events": {
+                "created": events_created,
+                "duplicates": events_duplicates,
+            },
+            "totalCostUnits": end_result.total_cost_units,
+            "summary": summary,
+        })
 
     # =========================================================================
     # Meters
