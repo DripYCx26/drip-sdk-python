@@ -17,7 +17,7 @@ This **Core SDK** is optimized for pilots: capture usage and run data first, add
 ### 1. Install
 
 ```bash
-pip install drip-sdk==1.0.1
+pip install drip-sdk
 ```
 
 ### 2. Set your API key
@@ -77,8 +77,8 @@ drip.record_run(
     customer_id="customer_123",
     workflow="research-agent",
     events=[
-        {"event_type": "llm.call", "model": "gpt-4", "input_tokens": 500, "output_tokens": 1200},
-        {"event_type": "tool.call", "name": "web-search", "duration": 1500},
+        {"eventType": "llm.call", "quantity": 1700, "units": "tokens"},
+        {"eventType": "tool.call", "quantity": 1},
     ],
     status="COMPLETED"
 )
@@ -110,7 +110,7 @@ print("Usage + run recorded")
 ## Installation Options
 
 ```bash
-pip install drip-sdk==1.0.1           # core only
+pip install drip-sdk           # core only
 pip install drip-sdk[fastapi]==1.0.1  # FastAPI helpers
 pip install drip-sdk[flask]==1.0.1    # Flask helpers
 pip install drip-sdk[all]==1.0.1      # everything
