@@ -1518,16 +1518,16 @@ class Drip:
                         "run", run.id, event.get("eventType", ""), i
                     )
                 )
-                batch_events.append({
+                ev_dict: dict[str, Any] = {
                     "runId": run.id,
                     "eventType": event.get("eventType"),
                     "quantity": event.get("quantity"),
-                    "units": event.get("units"),
-                    "description": event.get("description"),
-                    "costUnits": event.get("costUnits"),
-                    "metadata": event.get("metadata"),
                     "idempotencyKey": idem_key,
-                })
+                }
+                for opt_key in ("units", "description", "costUnits", "metadata"):
+                    if event.get(opt_key) is not None:
+                        ev_dict[opt_key] = event[opt_key]
+                batch_events.append(ev_dict)
             batch_result = self.emit_events_batch(batch_events)
             events_created = batch_result.created
             events_duplicates = batch_result.duplicates
@@ -2642,16 +2642,16 @@ class AsyncDrip:
                         "run", run.id, event.get("eventType", ""), i
                     )
                 )
-                batch_events.append({
+                ev_dict: dict[str, Any] = {
                     "runId": run.id,
                     "eventType": event.get("eventType"),
                     "quantity": event.get("quantity"),
-                    "units": event.get("units"),
-                    "description": event.get("description"),
-                    "costUnits": event.get("costUnits"),
-                    "metadata": event.get("metadata"),
                     "idempotencyKey": idem_key,
-                })
+                }
+                for opt_key in ("units", "description", "costUnits", "metadata"):
+                    if event.get(opt_key) is not None:
+                        ev_dict[opt_key] = event[opt_key]
+                batch_events.append(ev_dict)
             batch_result = await self.emit_events_batch(batch_events)
             events_created = batch_result.created
             events_duplicates = batch_result.duplicates
