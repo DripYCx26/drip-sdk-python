@@ -415,6 +415,52 @@ timeline = client.get_run_timeline(run.id)
 print(f"Total cost: {timeline.totals.total_cost_units}")
 ```
 
+### Distributed Tracing (correlation_id)
+
+Pass a `correlation_id` to link Drip runs with your existing observability tools (OpenTelemetry, Datadog, etc.):
+
+```python
+from opentelemetry import trace
+
+span = trace.get_current_span()
+
+run = client.start_run(
+    customer_id="customer_123",
+    workflow_id=workflow.id,
+    correlation_id=span.get_span_context().trace_id,  # OpenTelemetry trace ID
+)
+
+# Or with record_run:
+client.record_run(
+    customer_id="customer_123",
+    workflow="research-agent",
+    correlation_id="trace_abc123",
+    events=[
+        {"eventType": "llm.call", "quantity": 1700, "units": "tokens"},
+    ],
+    status="COMPLETED",
+)
+```
+
+**Key points:**
+- `correlation_id` is **user-supplied**, not auto-generated — you provide your own trace/request ID
+- It's **optional** — skip it if you don't use distributed tracing
+- Use it to cross-reference Drip billing data with traces in your APM dashboard
+- Common values: OpenTelemetry `trace_id`, Datadog `trace_id`, or your own `request_id`
+- Visible in the Drip dashboard timeline and available via `get_run_timeline()`
+
+Events also accept a `correlation_id` for finer-grained linking:
+
+```python
+client.emit_event(
+    run_id=run.id,
+    event_type="llm.call",
+    quantity=1700,
+    units="tokens",
+    correlation_id="span_xyz",  # Link to a specific span
+)
+```
+
 ---
 
 ## Error Handling

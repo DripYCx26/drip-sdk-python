@@ -100,10 +100,49 @@ print("Usage + run recorded")
 | `meter` | What's being measured (tokens, calls, time, etc.) |
 | `quantity` | Numeric usage value |
 | `run` | A single request or job execution |
+| `correlation_id` | Optional. Your trace/request ID for linking Drip data with your APM (OpenTelemetry, Datadog, etc.) |
 
 **Status values:** `PENDING` | `RUNNING` | `COMPLETED` | `FAILED`
 
 **Event schema:** Payloads are schema-flexible. Drip stores events as structured JSON and does not enforce a fixed event taxonomy. CamelCase is accepted.
+
+> **Distributed tracing:** Pass `correlation_id` to `start_run()`, `record_run()`, or `emit_event()` to cross-reference Drip billing with your observability stack. See [FULL_SDK.md](./FULL_SDK.md#distributed-tracing-correlation_id) for details.
+
+---
+
+## Idempotency Keys
+
+Every mutating SDK method (`charge`, `track_usage`, `emit_event`) accepts an optional `idempotency_key` parameter. The server uses this key to deduplicate requests — if two requests share the same key, only the first is processed.
+
+`record_run` generates idempotency keys internally for its batch events (using `external_run_id` when provided, otherwise deterministic keys).
+
+### Auto-generated keys (default)
+
+When you omit `idempotency_key`, the SDK generates one automatically. The auto key is:
+
+- **Unique per call** — two separate calls with identical parameters produce different keys (a monotonic counter ensures this).
+- **Stable across retries** — the key is generated once and reused for all retry attempts of that call, so network retries are safely deduplicated.
+- **Deterministic** — no randomness; keys are reproducible for debugging.
+
+This means you get **free retry safety** with zero configuration.
+
+### When to pass explicit keys
+
+Pass your own `idempotency_key` when you need **application-level deduplication** — e.g., to guarantee that a specific business operation is billed exactly once, even across process restarts:
+
+```python
+drip.charge(
+    customer_id="cust_123",
+    meter="api_calls",
+    quantity=1,
+    idempotency_key=f"order_{order_id}_charge",  # your business-level key
+)
+```
+
+Common patterns:
+- `order_{order_id}` — one charge per order
+- `run_{run_id}_step_{step_index}` — one charge per pipeline step
+- `invoice_{invoice_id}` — one charge per invoice
 
 ---
 
@@ -111,9 +150,9 @@ print("Usage + run recorded")
 
 ```bash
 pip install drip-sdk           # core only
-pip install drip-sdk[fastapi]==1.0.1  # FastAPI helpers
-pip install drip-sdk[flask]==1.0.1    # Flask helpers
-pip install drip-sdk[all]==1.0.1      # everything
+pip install drip-sdk[fastapi]  # FastAPI helpers
+pip install drip-sdk[flask]    # Flask helpers
+pip install drip-sdk[all]      # everything
 ```
 
 ---
