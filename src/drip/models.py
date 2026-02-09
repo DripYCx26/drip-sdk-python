@@ -91,7 +91,7 @@ class DripConfig(BaseModel):
 
     api_key: str = Field(..., description="API key from Drip dashboard")
     base_url: str = Field(
-        default="https://api.drip.dev/v1", description="Base URL for the Drip API"
+        default="https://drip-app-hlunj.ondigitalocean.app/v1", description="Base URL for the Drip API"
     )
     timeout: float = Field(default=30.0, description="Request timeout in seconds")
 

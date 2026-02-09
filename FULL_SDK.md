@@ -498,7 +498,7 @@ DripMiddleware(
 | Variable | Description |
 |----------|-------------|
 | `DRIP_API_KEY` | Your Drip API key |
-| `DRIP_API_URL` | Custom API base URL (default: https://api.drip.dev/v1) |
+| `DRIP_API_URL` | Custom API base URL (default: https://drip-app-hlunj.ondigitalocean.app/v1) |
 | `DRIP_ENV` | Environment (development/production) |
 
 ---

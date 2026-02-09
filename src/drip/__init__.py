@@ -56,7 +56,7 @@ Flask Integration:
 
 Environment Variables:
     DRIP_API_KEY: Your Drip API key (alternative to passing api_key)
-    DRIP_API_URL: Custom API base URL (defaults to https://api.drip.dev/v1)
+    DRIP_API_URL: Custom API base URL (defaults to https://drip-app-hlunj.ondigitalocean.app/v1)
 """
 
 __version__ = "1.0.1"

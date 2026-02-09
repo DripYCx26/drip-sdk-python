@@ -240,7 +240,7 @@ class Drip:
         ... )
     """
 
-    DEFAULT_BASE_URL = "https://api.drip.dev/v1"
+    DEFAULT_BASE_URL = "https://drip-app-hlunj.ondigitalocean.app/v1"
     DEFAULT_TIMEOUT = 30.0
 
     def __init__(
@@ -256,7 +256,7 @@ class Drip:
         Args:
             api_key: API key from Drip dashboard. If not provided,
                      reads from DRIP_API_KEY environment variable.
-            base_url: Base URL for the API. Defaults to https://api.drip.dev/v1.
+            base_url: Base URL for the API. Defaults to https://drip-app-hlunj.ondigitalocean.app/v1.
                       Can also be set via DRIP_API_URL environment variable.
             timeout: Request timeout in seconds. Defaults to 30.
             resilience: Enable production resilience features (rate limiting,
@@ -1624,7 +1624,7 @@ class AsyncDrip:
         ...     )
     """
 
-    DEFAULT_BASE_URL = "https://api.drip.dev/v1"
+    DEFAULT_BASE_URL = "https://drip-app-hlunj.ondigitalocean.app/v1"
     DEFAULT_TIMEOUT = 30.0
 
     def __init__(

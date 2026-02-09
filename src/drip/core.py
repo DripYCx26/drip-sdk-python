@@ -66,7 +66,7 @@ class DripConfig:
     api_key: str
     """Your Drip API key."""
 
-    base_url: str = "https://api.drip.dev/v1"
+    base_url: str = "https://drip-app-hlunj.ondigitalocean.app/v1"
     """Base URL for the Drip API."""
 
     timeout: float = 30.0
@@ -399,7 +399,7 @@ class Drip:
     def __init__(
         self,
         api_key: str | None = None,
-        base_url: str = "https://api.drip.dev/v1",
+        base_url: str = "https://drip-app-hlunj.ondigitalocean.app/v1",
         timeout: float = 30.0,
     ) -> None:
         """
@@ -1246,7 +1246,7 @@ class AsyncDrip:
     def __init__(
         self,
         api_key: str | None = None,
-        base_url: str = "https://api.drip.dev/v1",
+        base_url: str = "https://drip-app-hlunj.ondigitalocean.app/v1",
         timeout: float = 30.0,
     ) -> None:
         """Create a new async Drip SDK client."""
