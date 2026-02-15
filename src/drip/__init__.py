@@ -59,7 +59,7 @@ Environment Variables:
     DRIP_API_URL: Custom API base URL (defaults to https://drip-app-hlunj.ondigitalocean.app/v1)
 """
 
-__version__ = "1.0.6"
+__version__ = "1.0.7"
 
 from .client import AsyncDrip, Drip
 

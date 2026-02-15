@@ -28,6 +28,8 @@ even across process restarts.
 from __future__ import annotations
 
 import asyncio
+import json as _json_mod
+import logging
 import os
 import random
 import threading
@@ -40,6 +42,7 @@ import httpx
 
 from .errors import (
     DripAuthenticationError,
+    DripError,
     DripNetworkError,
     create_api_error_from_response,
 )
@@ -84,6 +87,8 @@ from .resilience import (
 )
 from .stream import StreamMeter, StreamMeterOptions
 from .utils import generate_idempotency_key, verify_webhook_signature
+
+logger = logging.getLogger("drip.client")
 
 # Type variable for generic wrap_api_call
 T = TypeVar("T")
@@ -306,7 +311,7 @@ class Drip:
             headers={
                 "Authorization": f"Bearer {self._api_key}",
                 "Content-Type": "application/json",
-                "User-Agent": "drip-sdk-python/1.0.6",
+                "User-Agent": "drip-sdk-python/1.0.7",
             },
         )
 
@@ -465,6 +470,14 @@ class Drip:
         params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Execute the actual HTTP request (internal)."""
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "drip request: %s %s body=%s params=%s",
+                method,
+                path,
+                _json_mod.dumps(json, default=str) if json else None,
+                _json_mod.dumps(params, default=str) if params else None,
+            )
         try:
             response = self._client.request(
                 method=method,
@@ -484,6 +497,15 @@ class Drip:
             except Exception:
                 body = {"error": response.text or "Unknown error"}
 
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    "drip response: %s %s status=%d body=%s",
+                    method,
+                    path,
+                    response.status_code,
+                    _json_mod.dumps(body, default=str),
+                )
+
             error = create_api_error_from_response(response.status_code, body)
             # Add status_code for resilience retry logic
             error.status_code = response.status_code  # type: ignore[attr-defined]
@@ -491,13 +513,25 @@ class Drip:
 
         # Parse successful response
         if response.status_code == 204:
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug("drip response: %s %s status=204 body={}", method, path)
             return {}
 
         try:
             result: dict[str, Any] = response.json()
-            return result
         except Exception:
-            return {}
+            result = {}
+
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "drip response: %s %s status=%d body=%s",
+                method,
+                path,
+                response.status_code,
+                _json_mod.dumps(result, default=str),
+            )
+
+        return result
 
     def _get(
         self,
@@ -1462,8 +1496,8 @@ class Drip:
         """
         One-call simplified API for recording a complete agent run.
 
-        This orchestrates workflow resolution, run creation, event emission,
-        and run completion into a single call.
+        Server-side endpoint handles workflow resolution, run creation,
+        event emission, and run completion atomically.
 
         Args:
             customer_id: The customer ID.
@@ -1479,35 +1513,87 @@ class Drip:
         Returns:
             RecordRunResult with run info and event stats.
         """
-        import re
-        start_time = int(time.time() * 1000)
+        # Normalize event keys: accept both snake_case and camelCase
+        normalized_events: list[dict[str, Any]] = []
+        for event in events:
+            evt: dict[str, Any] = {
+                "eventType": event.get("event_type", event.get("eventType", "")),
+            }
+            if "quantity" in event:
+                evt["quantity"] = event["quantity"]
+            for key in ("units", "description", "metadata"):
+                if event.get(key) is not None:
+                    evt[key] = event[key]
+            cost = event.get("cost_units", event.get("costUnits"))
+            if cost is not None:
+                evt["costUnits"] = cost
+            normalized_events.append(evt)
 
-        # Step 1: Resolve workflow (get or create by slug)
-        workflow_id = workflow
-        workflow_name = workflow
-        if not workflow.startswith("wf_"):
-            try:
-                workflows = self.list_workflows()
-                existing = next(
-                    (w for w in workflows.data if w.slug == workflow or w.id == workflow),
-                    None,
-                )
-                if existing:
-                    workflow_id = existing.id
-                    workflow_name = existing.name
-                else:
-                    pretty_name = re.sub(r"[_-]", " ", workflow).title()
-                    created = self.create_workflow(
-                        name=pretty_name,
-                        slug=workflow,
-                        product_surface="AGENT",
-                    )
-                    workflow_id = created.id
-                    workflow_name = created.name
-            except Exception:
-                workflow_id = workflow
+        body: dict[str, Any] = {
+            "customerId": customer_id,
+            "workflow": workflow,
+            "events": normalized_events,
+            "status": status,
+        }
+        if error_message:
+            body["errorMessage"] = error_message
+        if error_code:
+            body["errorCode"] = error_code
+        if external_run_id:
+            body["externalRunId"] = external_run_id
+        if correlation_id:
+            body["correlationId"] = correlation_id
+        if metadata:
+            body["metadata"] = metadata
 
-        # Step 2: Start the run
+        # Try single-call endpoint; fall back to 4-step if server returns 404
+        try:
+            data = self._post("/runs/record", json=body)
+            return RecordRunResult.model_validate(data)
+        except DripError as e:
+            if e.status_code != 404:
+                raise
+
+        return self._record_run_fallback(
+            customer_id, workflow, normalized_events, status,
+            error_message, error_code, external_run_id, correlation_id, metadata,
+        )
+
+    def _record_run_fallback(
+        self,
+        customer_id: str,
+        workflow: str,
+        events: list[dict[str, Any]],
+        status: str,
+        error_message: str | None,
+        error_code: str | None,
+        external_run_id: str | None,
+        correlation_id: str | None,
+        metadata: dict[str, Any] | None,
+    ) -> RecordRunResult:
+        """4-step orchestration fallback for servers without POST /runs/record."""
+        import time as _time
+
+        start = _time.monotonic()
+
+        # Step 1: Resolve workflow
+        workflows_resp = self.list_workflows()
+        match = next(
+            (w for w in workflows_resp.data if w.slug == workflow or w.id == workflow),
+            None,
+        )
+        if match:
+            workflow_id = match.id
+            workflow_name = match.name
+        else:
+            pretty = workflow.replace("_", " ").replace("-", " ").title()
+            created = self._post("/workflows", json={
+                "name": pretty, "slug": workflow, "productSurface": "CUSTOM",
+            })
+            workflow_id = created["id"]
+            workflow_name = created["name"]
+
+        # Step 2: Start run
         run = self.start_run(
             customer_id=customer_id,
             workflow_id=workflow_id,
@@ -1516,34 +1602,28 @@ class Drip:
             metadata=metadata,
         )
 
-        # Step 3: Emit events in batch
+        # Step 3: Emit events
         events_created = 0
         events_duplicates = 0
         if events:
-            batch_events = []
-            for i, event in enumerate(events):
-                idem_key = (
-                    f"{external_run_id}:{event.get('eventType', '')}:{i}"
-                    if external_run_id
-                    else _deterministic_idempotency_key(
-                        "run", run.id, event.get("eventType", ""), i
-                    )
-                )
-                ev_dict: dict[str, Any] = {
+            batch: list[dict[str, Any]] = []
+            for i, evt in enumerate(events):
+                entry: dict[str, Any] = {
                     "runId": run.id,
-                    "eventType": event.get("eventType"),
-                    "quantity": event.get("quantity"),
-                    "idempotencyKey": idem_key,
+                    "eventType": evt["eventType"],
+                    "quantity": evt.get("quantity", 1),
                 }
-                for opt_key in ("units", "description", "costUnits", "metadata"):
-                    if event.get(opt_key) is not None:
-                        ev_dict[opt_key] = event[opt_key]
-                batch_events.append(ev_dict)
-            batch_result = self.emit_events_batch(batch_events)
-            events_created = batch_result.created
-            events_duplicates = batch_result.duplicates
+                for key in ("units", "description", "costUnits", "metadata"):
+                    if key in evt:
+                        entry[key] = evt[key]
+                if external_run_id:
+                    entry["idempotencyKey"] = f"{external_run_id}:{evt['eventType']}:{i}"
+                batch.append(entry)
+            result = self.emit_events_batch(batch)
+            events_created = result.created
+            events_duplicates = result.duplicates
 
-        # Step 4: End the run
+        # Step 4: End run
         end_result = self.end_run(
             run_id=run.id,
             status=status,
@@ -1551,25 +1631,21 @@ class Drip:
             error_code=error_code,
         )
 
-        duration_ms = int(time.time() * 1000) - start_time
-        event_summary = f"{events_created} events recorded" if events else "no events"
-        status_icon = {"COMPLETED": "✓", "FAILED": "✗"}.get(status, "○")
-        summary = f"{status_icon} {workflow_name}: {event_summary} ({end_result.duration_ms or duration_ms}ms)"
+        elapsed_ms = int((_time.monotonic() - start) * 1000)
+        dur = end_result.duration_ms if end_result.duration_ms is not None else elapsed_ms
+        icon = "\u2713" if status == "COMPLETED" else "\u2717" if status == "FAILED" else "\u25CB"
 
         return RecordRunResult.model_validate({
             "run": {
                 "id": run.id,
                 "workflowId": workflow_id,
                 "workflowName": workflow_name,
-                "status": status,
-                "durationMs": end_result.duration_ms,
+                "status": end_result.status.value,
+                "durationMs": dur,
             },
-            "events": {
-                "created": events_created,
-                "duplicates": events_duplicates,
-            },
+            "events": {"created": events_created, "duplicates": events_duplicates},
             "totalCostUnits": end_result.total_cost_units,
-            "summary": summary,
+            "summary": f"{icon} {workflow_name}: {events_created} events recorded ({dur}ms)",
         })
 
     # =========================================================================
@@ -1764,7 +1840,7 @@ class AsyncDrip:
             headers={
                 "Authorization": f"Bearer {self._api_key}",
                 "Content-Type": "application/json",
-                "User-Agent": "drip-sdk-python/1.0.6",
+                "User-Agent": "drip-sdk-python/1.0.7",
             },
         )
 
@@ -1896,6 +1972,14 @@ class AsyncDrip:
         params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Execute the actual async HTTP request (internal)."""
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "drip request: %s %s body=%s params=%s",
+                method,
+                path,
+                _json_mod.dumps(json, default=str) if json else None,
+                _json_mod.dumps(params, default=str) if params else None,
+            )
         try:
             response = await self._client.request(
                 method=method,
@@ -1914,19 +1998,40 @@ class AsyncDrip:
             except Exception:
                 body = {"error": response.text or "Unknown error"}
 
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    "drip response: %s %s status=%d body=%s",
+                    method,
+                    path,
+                    response.status_code,
+                    _json_mod.dumps(body, default=str),
+                )
+
             error = create_api_error_from_response(response.status_code, body)
             # Add status_code for resilience retry logic
             error.status_code = response.status_code  # type: ignore[attr-defined]
             raise error
 
         if response.status_code == 204:
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug("drip response: %s %s status=204 body={}", method, path)
             return {}
 
         try:
             result: dict[str, Any] = response.json()
-            return result
         except Exception:
-            return {}
+            result = {}
+
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "drip response: %s %s status=%d body=%s",
+                method,
+                path,
+                response.status_code,
+                _json_mod.dumps(result, default=str),
+            )
+
+        return result
 
     async def _get(
         self,
@@ -2612,35 +2717,87 @@ class AsyncDrip:
         metadata: dict[str, Any] | None = None,
     ) -> RecordRunResult:
         """One-call simplified API for recording a complete agent run."""
-        import re
-        start_time = int(time.time() * 1000)
+        # Normalize event keys: accept both snake_case and camelCase
+        normalized_events: list[dict[str, Any]] = []
+        for event in events:
+            evt: dict[str, Any] = {
+                "eventType": event.get("event_type", event.get("eventType", "")),
+            }
+            if "quantity" in event:
+                evt["quantity"] = event["quantity"]
+            for key in ("units", "description", "metadata"):
+                if event.get(key) is not None:
+                    evt[key] = event[key]
+            cost = event.get("cost_units", event.get("costUnits"))
+            if cost is not None:
+                evt["costUnits"] = cost
+            normalized_events.append(evt)
 
-        # Step 1: Resolve workflow (get or create by slug)
-        workflow_id = workflow
-        workflow_name = workflow
-        if not workflow.startswith("wf_"):
-            try:
-                workflows = await self.list_workflows()
-                existing = next(
-                    (w for w in workflows.data if w.slug == workflow or w.id == workflow),
-                    None,
-                )
-                if existing:
-                    workflow_id = existing.id
-                    workflow_name = existing.name
-                else:
-                    pretty_name = re.sub(r"[_-]", " ", workflow).title()
-                    created = await self.create_workflow(
-                        name=pretty_name,
-                        slug=workflow,
-                        product_surface="AGENT",
-                    )
-                    workflow_id = created.id
-                    workflow_name = created.name
-            except Exception:
-                workflow_id = workflow
+        body: dict[str, Any] = {
+            "customerId": customer_id,
+            "workflow": workflow,
+            "events": normalized_events,
+            "status": status,
+        }
+        if error_message:
+            body["errorMessage"] = error_message
+        if error_code:
+            body["errorCode"] = error_code
+        if external_run_id:
+            body["externalRunId"] = external_run_id
+        if correlation_id:
+            body["correlationId"] = correlation_id
+        if metadata:
+            body["metadata"] = metadata
 
-        # Step 2: Start the run
+        # Try single-call endpoint; fall back to 4-step if server returns 404
+        try:
+            data = await self._post("/runs/record", json=body)
+            return RecordRunResult.model_validate(data)
+        except DripError as e:
+            if e.status_code != 404:
+                raise
+
+        return await self._record_run_fallback(
+            customer_id, workflow, normalized_events, status,
+            error_message, error_code, external_run_id, correlation_id, metadata,
+        )
+
+    async def _record_run_fallback(
+        self,
+        customer_id: str,
+        workflow: str,
+        events: list[dict[str, Any]],
+        status: str,
+        error_message: str | None,
+        error_code: str | None,
+        external_run_id: str | None,
+        correlation_id: str | None,
+        metadata: dict[str, Any] | None,
+    ) -> RecordRunResult:
+        """4-step orchestration fallback for servers without POST /runs/record."""
+        import time as _time
+
+        start = _time.monotonic()
+
+        # Step 1: Resolve workflow
+        workflows_resp = await self.list_workflows()
+        match = next(
+            (w for w in workflows_resp.data if w.slug == workflow or w.id == workflow),
+            None,
+        )
+        if match:
+            workflow_id = match.id
+            workflow_name = match.name
+        else:
+            pretty = workflow.replace("_", " ").replace("-", " ").title()
+            created = await self._post("/workflows", json={
+                "name": pretty, "slug": workflow, "productSurface": "CUSTOM",
+            })
+            workflow_id = created["id"]
+            workflow_name = created["name"]
+
+        # Step 2: Start run
         run = await self.start_run(
             customer_id=customer_id,
             workflow_id=workflow_id,
@@ -2649,34 +2806,28 @@ class AsyncDrip:
             metadata=metadata,
         )
 
-        # Step 3: Emit events in batch
+        # Step 3: Emit events
         events_created = 0
         events_duplicates = 0
         if events:
-            batch_events = []
-            for i, event in enumerate(events):
-                idem_key = (
-                    f"{external_run_id}:{event.get('eventType', '')}:{i}"
-                    if external_run_id
-                    else _deterministic_idempotency_key(
-                        "run", run.id, event.get("eventType", ""), i
-                    )
-                )
-                ev_dict: dict[str, Any] = {
+            batch: list[dict[str, Any]] = []
+            for i, evt in enumerate(events):
+                entry: dict[str, Any] = {
                     "runId": run.id,
-                    "eventType": event.get("eventType"),
-                    "quantity": event.get("quantity"),
-                    "idempotencyKey": idem_key,
+                    "eventType": evt["eventType"],
+                    "quantity": evt.get("quantity", 1),
                 }
-                for opt_key in ("units", "description", "costUnits", "metadata"):
-                    if event.get(opt_key) is not None:
-                        ev_dict[opt_key] = event[opt_key]
-                batch_events.append(ev_dict)
-            batch_result = await self.emit_events_batch(batch_events)
-            events_created = batch_result.created
-            events_duplicates = batch_result.duplicates
+                for key in ("units", "description", "costUnits", "metadata"):
+                    if key in evt:
+                        entry[key] = evt[key]
+                if external_run_id:
+                    entry["idempotencyKey"] = f"{external_run_id}:{evt['eventType']}:{i}"
+                batch.append(entry)
+            result = await self.emit_events_batch(batch)
+            events_created = result.created
+            events_duplicates = result.duplicates
 
-        # Step 4: End the run
+        # Step 4: End run
         end_result = await self.end_run(
             run_id=run.id,
             status=status,
@@ -2684,25 +2835,21 @@ class AsyncDrip:
             error_code=error_code,
         )
 
-        duration_ms = int(time.time() * 1000) - start_time
-        event_summary = f"{events_created} events recorded" if events else "no events"
-        status_icon = {"COMPLETED": "✓", "FAILED": "✗"}.get(status, "○")
-        summary = f"{status_icon} {workflow_name}: {event_summary} ({end_result.duration_ms or duration_ms}ms)"
+        elapsed_ms = int((_time.monotonic() - start) * 1000)
+        dur = end_result.duration_ms if end_result.duration_ms is not None else elapsed_ms
+        icon = "\u2713" if status == "COMPLETED" else "\u2717" if status == "FAILED" else "\u25CB"
 
         return RecordRunResult.model_validate({
             "run": {
                 "id": run.id,
                 "workflowId": workflow_id,
                 "workflowName": workflow_name,
-                "status": status,
-                "durationMs": end_result.duration_ms,
+                "status": end_result.status.value,
+                "durationMs": dur,
             },
-            "events": {
-                "created": events_created,
-                "duplicates": events_duplicates,
-            },
+            "events": {"created": events_created, "duplicates": events_duplicates},
             "totalCostUnits": end_result.total_cost_units,
-            "summary": summary,
+            "summary": f"{icon} {workflow_name}: {events_created} events recorded ({dur}ms)",
         })
 
     # =========================================================================
