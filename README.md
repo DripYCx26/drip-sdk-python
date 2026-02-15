@@ -171,7 +171,7 @@ pip install drip-sdk[all]      # everything
 | Method | Description |
 |--------|-------------|
 | `ping()` | Verify API connection |
-| `create_customer(params)` | Create a customer |
+| `create_customer(...)` | Create a customer (see below) |
 | `get_customer(customer_id)` | Get customer details |
 | `list_customers(options)` | List all customers |
 | `track_usage(params)` | Record metered usage |
@@ -181,6 +181,36 @@ pip install drip-sdk[all]      # everything
 | `emit_events_batch(params)` | Batch log events |
 | `end_run(run_id, params)` | Complete execution trace |
 | `get_run_timeline(run_id)` | Get execution timeline |
+
+### Creating Customers
+
+All parameters are optional, but at least one of `external_customer_id` or `onchain_address` must be provided:
+
+```python
+# Simplest — just your internal user ID
+customer = drip.create_customer(external_customer_id="user_123")
+
+# With an on-chain address (for on-chain billing)
+customer = drip.create_customer(
+    onchain_address="0x1234...",
+    external_customer_id="user_123"
+)
+
+# Internal/non-billing customer (for tracking only)
+customer = drip.create_customer(
+    external_customer_id="internal-team",
+    is_internal=True
+)
+```
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `external_customer_id` | `str` | No* | Your internal user/account ID |
+| `onchain_address` | `str` | No* | Customer's Ethereum address |
+| `is_internal` | `bool` | No | Mark as internal (non-billing). Default: `False` |
+| `metadata` | `dict` | No | Arbitrary key-value metadata |
+
+\*At least one of `external_customer_id` or `onchain_address` is required.
 
 ---
 
