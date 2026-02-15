@@ -97,8 +97,8 @@ class Customer:
     external_customer_id: str | None
     """Your external customer ID (if provided)."""
 
-    onchain_address: str
-    """Customer's on-chain address."""
+    onchain_address: str | None
+    """Customer's on-chain address (may be None for off-chain-only customers)."""
 
     metadata: dict[str, Any] | None
     """Custom metadata."""

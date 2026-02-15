@@ -30,13 +30,16 @@ export DRIP_API_KEY=sk_test_...
 export DRIP_API_KEY=pk_test_...
 ```
 
-### 3. Track usage (one line)
+### 3. Create a customer and track usage
 
 ```python
 from drip import drip
 
-# Track usage - that's it
-drip.track_usage(customer_id="cust_123", meter="api_calls", quantity=1)
+# Create a customer first
+customer = drip.create_customer(external_customer_id="user_123")
+
+# Track usage — that's it
+drip.track_usage(customer_id=customer.id, meter="api_calls", quantity=1)
 ```
 
 The `drip` singleton reads `DRIP_API_KEY` from your environment automatically.
@@ -64,9 +67,12 @@ from drip import drip
 # Verify connectivity
 drip.ping()
 
+# Create a customer (at least one of external_customer_id or onchain_address required)
+customer = drip.create_customer(external_customer_id="user_123")
+
 # Record usage
 drip.track_usage(
-    customer_id="customer_123",
+    customer_id=customer.id,
     meter="llm_tokens",
     quantity=842,
     metadata={"model": "gpt-4o-mini"}
@@ -74,7 +80,7 @@ drip.track_usage(
 
 # Record execution lifecycle
 drip.record_run(
-    customer_id="customer_123",
+    customer_id=customer.id,
     workflow="research-agent",
     events=[
         {"eventType": "llm.call", "quantity": 1700, "units": "tokens"},
@@ -83,7 +89,7 @@ drip.record_run(
     status="COMPLETED"
 )
 
-print("Usage + run recorded")
+print(f"Customer {customer.id}: usage + run recorded")
 ```
 
 **Expected result:**
@@ -131,8 +137,10 @@ This means you get **free retry safety** with zero configuration.
 Pass your own `idempotency_key` when you need **application-level deduplication** — e.g., to guarantee that a specific business operation is billed exactly once, even across process restarts:
 
 ```python
+customer = drip.create_customer(external_customer_id="user_123")
+
 drip.charge(
-    customer_id="cust_123",
+    customer_id=customer.id,
     meter="api_calls",
     quantity=1,
     idempotency_key=f"order_{order_id}_charge",  # your business-level key
@@ -180,6 +188,7 @@ pip install drip-sdk[all]      # everything
 | `emit_event(params)` | Log event within run |
 | `emit_events_batch(params)` | Batch log events |
 | `end_run(run_id, params)` | Complete execution trace |
+| `get_run(run_id)` | Get run details and summary |
 | `get_run_timeline(run_id)` | Get execution timeline |
 
 ### Creating Customers
@@ -222,14 +231,17 @@ from drip import AsyncDrip
 async with AsyncDrip(api_key="sk_test_...") as client:
     await client.ping()
 
+    # Create a customer
+    customer = await client.create_customer(external_customer_id="user_123")
+
     await client.track_usage(
-        customer_id="customer_123",
+        customer_id=customer.id,
         meter="api_calls",
         quantity=1
     )
 
     result = await client.record_run(
-        customer_id="customer_123",
+        customer_id=customer.id,
         workflow="research-agent",
         events=[...],
         status="COMPLETED"
@@ -262,10 +274,13 @@ See **[FULL_SDK.md](./FULL_SDK.md)** for complete documentation.
 ## Error Handling
 
 ```python
-from drip import DripError, DripAPIError
+from drip import Drip, DripError, DripAPIError
+
+client = Drip(api_key="sk_test_...")
+customer = client.create_customer(external_customer_id="user_123")
 
 try:
-    result = client.track_usage(customer_id="customer_123", meter="api_calls", quantity=1)
+    result = client.track_usage(customer_id=customer.id, meter="api_calls", quantity=1)
 except DripAPIError as e:
     print(f"API error {e.status_code}: {e.message}")
 except DripError as e:
