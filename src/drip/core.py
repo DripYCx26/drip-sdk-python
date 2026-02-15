@@ -544,16 +544,20 @@ class Drip:
 
     def create_customer(
         self,
-        onchain_address: str,
+        onchain_address: str | None = None,
         external_customer_id: str | None = None,
+        is_internal: bool | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> Customer:
         """
         Create a new customer in your Drip account.
 
+        At least one of ``onchain_address`` or ``external_customer_id`` is required.
+
         Args:
-            onchain_address: The customer's on-chain wallet address.
-            external_customer_id: Your internal customer ID for reconciliation.
+            onchain_address: The customer's on-chain wallet address (optional).
+            external_customer_id: Your internal customer ID for reconciliation (optional).
+            is_internal: Mark as internal/non-billing customer (optional, defaults to False).
             metadata: Additional metadata to store.
 
         Returns:
@@ -561,13 +565,16 @@ class Drip:
 
         Example:
             >>> customer = client.create_customer(
-            ...     onchain_address="0x1234...",
             ...     external_customer_id="user_123"
             ... )
         """
-        payload: dict[str, Any] = {"onchainAddress": onchain_address}
+        payload: dict[str, Any] = {}
+        if onchain_address:
+            payload["onchainAddress"] = onchain_address
         if external_customer_id:
             payload["externalCustomerId"] = external_customer_id
+        if is_internal is not None:
+            payload["isInternal"] = is_internal
         if metadata:
             payload["metadata"] = metadata
 
@@ -577,7 +584,7 @@ class Drip:
             id=data["id"],
             business_id=data.get("businessId"),
             external_customer_id=data.get("externalCustomerId"),
-            onchain_address=data["onchainAddress"],
+            onchain_address=data.get("onchainAddress"),
             metadata=data.get("metadata"),
             created_at=data["createdAt"],
             updated_at=data["updatedAt"],
@@ -599,7 +606,7 @@ class Drip:
             id=data["id"],
             business_id=data.get("businessId"),
             external_customer_id=data.get("externalCustomerId"),
-            onchain_address=data["onchainAddress"],
+            onchain_address=data.get("onchainAddress"),
             metadata=data.get("metadata"),
             created_at=data["createdAt"],
             updated_at=data["updatedAt"],
@@ -637,7 +644,7 @@ class Drip:
                 id=c["id"],
                 business_id=c.get("businessId"),
                 external_customer_id=c.get("externalCustomerId"),
-                onchain_address=c["onchainAddress"],
+                onchain_address=c.get("onchainAddress"),
                 metadata=c.get("metadata"),
                 created_at=c["createdAt"],
                 updated_at=c["updatedAt"],
@@ -1352,14 +1359,23 @@ class AsyncDrip:
 
     async def create_customer(
         self,
-        onchain_address: str,
+        onchain_address: str | None = None,
         external_customer_id: str | None = None,
+        is_internal: bool | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> Customer:
-        """Create a new customer."""
-        payload: dict[str, Any] = {"onchainAddress": onchain_address}
+        """
+        Create a new customer.
+
+        At least one of ``onchain_address`` or ``external_customer_id`` is required.
+        """
+        payload: dict[str, Any] = {}
+        if onchain_address:
+            payload["onchainAddress"] = onchain_address
         if external_customer_id:
             payload["externalCustomerId"] = external_customer_id
+        if is_internal is not None:
+            payload["isInternal"] = is_internal
         if metadata:
             payload["metadata"] = metadata
 
@@ -1369,7 +1385,7 @@ class AsyncDrip:
             id=data["id"],
             business_id=data.get("businessId"),
             external_customer_id=data.get("externalCustomerId"),
-            onchain_address=data["onchainAddress"],
+            onchain_address=data.get("onchainAddress"),
             metadata=data.get("metadata"),
             created_at=data["createdAt"],
             updated_at=data["updatedAt"],
@@ -1383,7 +1399,7 @@ class AsyncDrip:
             id=data["id"],
             business_id=data.get("businessId"),
             external_customer_id=data.get("externalCustomerId"),
-            onchain_address=data["onchainAddress"],
+            onchain_address=data.get("onchainAddress"),
             metadata=data.get("metadata"),
             created_at=data["createdAt"],
             updated_at=data["updatedAt"],
@@ -1412,7 +1428,7 @@ class AsyncDrip:
                 id=c["id"],
                 business_id=c.get("businessId"),
                 external_customer_id=c.get("externalCustomerId"),
-                onchain_address=c["onchainAddress"],
+                onchain_address=c.get("onchainAddress"),
                 metadata=c.get("metadata"),
                 created_at=c["createdAt"],
                 updated_at=c["updatedAt"],

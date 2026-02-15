@@ -102,13 +102,19 @@ class DripConfig(BaseModel):
 
 
 class CreateCustomerParams(BaseModel):
-    """Parameters for creating a new customer."""
+    """Parameters for creating a new customer.
 
-    onchain_address: str = Field(
-        ..., alias="onchainAddress", description="Customer's smart account address"
+    At least one of ``onchain_address`` or ``external_customer_id`` is required.
+    """
+
+    onchain_address: str | None = Field(
+        default=None, alias="onchainAddress", description="Customer's smart account address"
     )
     external_customer_id: str | None = Field(
         default=None, alias="externalCustomerId", description="Your internal customer ID"
+    )
+    is_internal: bool | None = Field(
+        default=None, alias="isInternal", description="Mark as internal/non-billing customer"
     )
     metadata: dict[str, Any] | None = Field(default=None, description="Custom metadata")
 

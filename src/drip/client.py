@@ -306,7 +306,7 @@ class Drip:
             headers={
                 "Authorization": f"Bearer {self._api_key}",
                 "Content-Type": "application/json",
-                "User-Agent": "drip-sdk-python/1.0.0",
+                "User-Agent": "drip-sdk-python/1.0.6",
             },
         )
 
@@ -541,25 +541,36 @@ class Drip:
 
     def create_customer(
         self,
-        onchain_address: str,
+        onchain_address: str | None = None,
         external_customer_id: str | None = None,
+        is_internal: bool | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> Customer:
         """
         Create a new customer.
 
+        At least one of ``onchain_address`` or ``external_customer_id`` is required.
+
         Args:
-            onchain_address: Customer's smart account address.
-            external_customer_id: Your internal customer ID.
+            onchain_address: Customer's smart account address (optional).
+            external_customer_id: Your internal customer ID (optional).
+            is_internal: Mark as internal/non-billing customer (optional, defaults to False).
             metadata: Custom metadata.
 
         Returns:
             The created Customer object.
-        """
-        body: dict[str, Any] = {"onchainAddress": onchain_address}
 
+        Raises:
+            DripAPIError: If neither onchain_address nor external_customer_id is provided.
+        """
+        body: dict[str, Any] = {}
+
+        if onchain_address:
+            body["onchainAddress"] = onchain_address
         if external_customer_id:
             body["externalCustomerId"] = external_customer_id
+        if is_internal is not None:
+            body["isInternal"] = is_internal
         if metadata:
             body["metadata"] = metadata
 
@@ -1753,7 +1764,7 @@ class AsyncDrip:
             headers={
                 "Authorization": f"Bearer {self._api_key}",
                 "Content-Type": "application/json",
-                "User-Agent": "drip-sdk-python/1.0.0",
+                "User-Agent": "drip-sdk-python/1.0.6",
             },
         )
 
@@ -1959,15 +1970,24 @@ class AsyncDrip:
 
     async def create_customer(
         self,
-        onchain_address: str,
+        onchain_address: str | None = None,
         external_customer_id: str | None = None,
+        is_internal: bool | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> Customer:
-        """Create a new customer."""
-        body: dict[str, Any] = {"onchainAddress": onchain_address}
+        """
+        Create a new customer.
 
+        At least one of ``onchain_address`` or ``external_customer_id`` is required.
+        """
+        body: dict[str, Any] = {}
+
+        if onchain_address:
+            body["onchainAddress"] = onchain_address
         if external_customer_id:
             body["externalCustomerId"] = external_customer_id
+        if is_internal is not None:
+            body["isInternal"] = is_internal
         if metadata:
             body["metadata"] = metadata
 

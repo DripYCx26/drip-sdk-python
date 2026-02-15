@@ -58,10 +58,13 @@ Understanding `track_usage` vs `charge`:
 ## Quick Start
 
 ```python
-# Create a customer
+# Create a customer (just pass your internal user ID)
+customer = client.create_customer(external_customer_id="customer_123")
+
+# Or with an on-chain address for on-chain billing
 customer = client.create_customer(
-    onchain_address="0x1234567890abcdef...",
-    external_customer_id="customer_123"
+    external_customer_id="customer_123",
+    onchain_address="0x1234567890abcdef..."
 )
 
 # Track usage (logs to ledger, no billing)
@@ -82,6 +85,17 @@ result = client.charge(
 print(f"Charged: {result.charge.amount_usdc} USDC")
 ```
 
+### `create_customer()` Parameters
+
+| Parameter | Type | Required | Description |
+| --------- | ---- | -------- | ----------- |
+| `external_customer_id` | `str` | No* | Your internal user/account ID |
+| `onchain_address` | `str` | No* | Customer's Ethereum address |
+| `is_internal` | `bool` | No | Mark as internal (non-billing). Default: `False` |
+| `metadata` | `dict` | No | Arbitrary key-value metadata |
+
+\*At least one of `external_customer_id` or `onchain_address` is required.
+
 ---
 
 ## Async Support
@@ -91,7 +105,7 @@ from drip import AsyncDrip
 
 async with AsyncDrip(api_key="sk_test_...") as client:
     customer = await client.create_customer(
-        onchain_address="0x1234..."
+        external_customer_id="customer_123"
     )
 
     result = await client.charge(
