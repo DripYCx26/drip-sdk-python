@@ -217,7 +217,7 @@ customer = drip.create_customer(
 ## Async Core SDK
 
 ```python
-from drip.core import AsyncDrip
+from drip import AsyncDrip
 
 async with AsyncDrip(api_key="sk_test_...") as client:
     await client.ping()

@@ -125,6 +125,7 @@ async with AsyncDrip(api_key="sk_test_...") as client:
 |--------|-------------|
 | `track_usage(params)` | Log usage to ledger (no billing) |
 | `charge(params)` | Create a billable charge |
+| `wrap_api_call(params)` | Wrap external API call with guaranteed usage recording |
 | `get_balance(customer_id)` | Get balance and usage summary |
 | `get_charge(charge_id)` | Get charge details |
 | `list_charges(options)` | List all charges |
@@ -138,6 +139,7 @@ async with AsyncDrip(api_key="sk_test_...") as client:
 | `emit_event(params)` | Log event within run |
 | `emit_events_batch(params)` | Batch log events |
 | `end_run(run_id, params)` | Complete execution trace |
+| `get_run(run_id)` | Get run details |
 | `get_run_timeline(run_id)` | Get execution timeline |
 | `create_workflow(params)` | Create a workflow |
 | `list_workflows()` | List all workflows |
@@ -171,7 +173,7 @@ async with AsyncDrip(api_key="sk_test_...") as client:
 | Method | Description |
 |--------|-------------|
 | `checkout(params)` | Create checkout session (fiat on-ramp) |
-| `list_meters()` | List available meters |
+| `list_meters()` | List available meters (returns `data`: list of `Meter` with `name`, `meter`, `unit_price_usd`, `is_active`) |
 | `ping()` | Verify API connection |
 
 ---
@@ -359,13 +361,31 @@ charge_id = "chg_abc123"
 charge = client.get_charge(charge_id)
 charges = client.list_charges(customer_id="customer_123", limit=100)
 
-# Cost estimation
+# Cost estimation from actual usage
 from datetime import date
 result = client.estimate_from_usage(
     customer_id="customer_123",
     start_date=date(2024, 1, 1),
     end_date=date(2024, 1, 31)
 )
+
+# Cost estimation from hypothetical usage (no real data needed)
+estimate = client.estimate_from_hypothetical(
+    items=[
+        {"usage_type": "api_calls", "quantity": 1000},
+        {"usage_type": "tokens", "quantity": 50000},
+    ]
+)
+print(f"Estimated cost: ${estimate.estimated_total_usdc} USDC")
+
+# Wrap external API call with guaranteed usage recording
+result = client.wrap_api_call(
+    customer_id="customer_123",
+    meter="tokens",
+    call=lambda: openai.chat.completions.create(model="gpt-4", messages=messages),
+    extract_usage=lambda r: r.usage.total_tokens,
+)
+# result.result = the API response, result.idempotency_key = dedup key
 
 # Checkout (fiat on-ramp)
 checkout = client.checkout(
@@ -395,6 +415,8 @@ result = client.record_run(
 
 print(f"Run ID: {result.run.id}")
 ```
+
+> **Event key format:** Both snake_case (`event_type`, `cost_units`) and camelCase (`eventType`, `costUnits`) keys are accepted in event dicts. The SDK normalizes to camelCase before sending to the API.
 
 ### Fine-Grained Control
 
