@@ -58,13 +58,19 @@ Understanding `track_usage` vs `charge`:
 ## Quick Start
 
 ```python
-# Create a customer (just pass your internal user ID)
-customer = client.create_customer(external_customer_id="customer_123")
+# Create a customer (at least one of external_customer_id or onchain_address required)
+customer = client.create_customer(external_customer_id="user_123")
 
 # Or with an on-chain address for on-chain billing
 customer = client.create_customer(
-    external_customer_id="customer_123",
+    external_customer_id="user_123",
     onchain_address="0x1234567890abcdef..."
+)
+
+# Or an internal/non-billing customer (for tracking only)
+internal = client.create_customer(
+    external_customer_id="internal-team",
+    is_internal=True
 )
 
 # Track usage (logs to ledger, no billing)
@@ -104,10 +110,12 @@ print(f"Charged: {result.charge.amount_usdc} USDC")
 from drip import AsyncDrip
 
 async with AsyncDrip(api_key="sk_test_...") as client:
+    # Create a customer first
     customer = await client.create_customer(
-        external_customer_id="customer_123"
+        external_customer_id="user_123"
     )
 
+    # Then charge for usage
     result = await client.charge(
         customer_id=customer.id,
         meter="api_calls",
@@ -183,8 +191,11 @@ async with AsyncDrip(api_key="sk_test_...") as client:
 For LLM token streaming, accumulate usage locally and flush once:
 
 ```python
+# Create a customer first
+customer = client.create_customer(external_customer_id="user_123")
+
 meter = client.create_stream_meter(
-    customer_id="customer_123",
+    customer_id=customer.id,
     meter="tokens",
 )
 
@@ -203,8 +214,11 @@ print(f"Charged {result.charge.amount_usdc} USDC for {result.quantity} tokens")
 
 ```python
 async with AsyncDrip(api_key="sk_test_...") as client:
+    # Create a customer first
+    customer = await client.create_customer(external_customer_id="user_123")
+
     meter = client.create_stream_meter(
-        customer_id="customer_123",
+        customer_id=customer.id,
         meter="tokens",
     )
 
@@ -218,7 +232,7 @@ async with AsyncDrip(api_key="sk_test_...") as client:
 
 ```python
 meter = client.create_stream_meter(
-    customer_id="customer_123",
+    customer_id=customer.id,
     meter="tokens",
     idempotency_key="stream_req_123",           # Prevent duplicates
     metadata={"model": "gpt-4"},                # Attach to charge
@@ -302,12 +316,17 @@ DripMiddleware(app, meter="api_calls", quantity=1, customer_resolver=get_custome
 ## LangChain Integration
 
 ```python
+from drip import Drip
 from drip.integrations.langchain import DripCallbackHandler
 from langchain_openai import ChatOpenAI
 
+# Create a customer first
+client = Drip(api_key="sk_test_...")
+customer = client.create_customer(external_customer_id="user_123")
+
 handler = DripCallbackHandler(
     api_key="sk_test_...",
-    customer_id="customer_123",
+    customer_id=customer.id,
     workflow="chatbot",
 )
 
@@ -345,28 +364,30 @@ is_valid = verify_webhook_signature(
 ## Billing
 
 ```python
+# Create a customer first
+customer = client.create_customer(external_customer_id="user_123")
+
 # Create a billable charge
 result = client.charge(
-    customer_id="customer_123",
+    customer_id=customer.id,
     meter="api_calls",
     quantity=1,
 )
 
 # Get customer balance
-balance = client.get_balance("customer_123")
+balance = client.get_balance(customer.id)
 print(f"Balance: {balance.balance_usdc} USDC")
 
 # Query charges
-charge_id = "chg_abc123"
-charge = client.get_charge(charge_id)
-charges = client.list_charges(customer_id="customer_123", limit=100)
+charge = client.get_charge(result.charge.id)
+charges = client.list_charges(customer_id=customer.id, limit=100)
 
 # Cost estimation from actual usage
-from datetime import date
-result = client.estimate_from_usage(
-    customer_id="customer_123",
-    start_date=date(2024, 1, 1),
-    end_date=date(2024, 1, 31)
+from datetime import datetime
+estimate = client.estimate_from_usage(
+    period_start=datetime(2024, 1, 1),
+    period_end=datetime(2024, 1, 31),
+    customer_id=customer.id,
 )
 
 # Cost estimation from hypothetical usage (no real data needed)
@@ -391,7 +412,7 @@ result = client.wrap_api_call(
 checkout = client.checkout(
     amount=5000,  # $50.00 in cents
     return_url="https://yourapp.com/success",
-    customer_id="customer_123"
+    customer_id=customer.id,
 )
 print(f"Checkout URL: {checkout.url}")
 ```
@@ -403,8 +424,11 @@ print(f"Checkout URL: {checkout.url}")
 ### Simple (record_run)
 
 ```python
+# Create a customer first
+customer = client.create_customer(external_customer_id="user_123")
+
 result = client.record_run(
-    customer_id="customer_123",
+    customer_id=customer.id,
     workflow="text-generation",
     events=[
         {"eventType": "prompt.received", "quantity": 100, "units": "tokens"},
@@ -421,6 +445,9 @@ print(f"Run ID: {result.run.id}")
 ### Fine-Grained Control
 
 ```python
+# Create a customer
+customer = client.create_customer(external_customer_id="user_123")
+
 # Create workflow (once)
 workflow = client.create_workflow(
     name="Text Generation",
@@ -430,7 +457,7 @@ workflow = client.create_workflow(
 
 # Start run
 run = client.start_run(
-    customer_id="customer_123",
+    customer_id=customer.id,
     workflow_id=workflow.id,
     correlation_id="trace_456"
 )
@@ -458,17 +485,18 @@ Pass a `correlation_id` to link Drip runs with your existing observability tools
 ```python
 from opentelemetry import trace
 
+customer = client.create_customer(external_customer_id="user_123")
 span = trace.get_current_span()
 
 run = client.start_run(
-    customer_id="customer_123",
+    customer_id=customer.id,
     workflow_id=workflow.id,
     correlation_id=span.get_span_context().trace_id,  # OpenTelemetry trace ID
 )
 
 # Or with record_run:
 client.record_run(
-    customer_id="customer_123",
+    customer_id=customer.id,
     workflow="research-agent",
     correlation_id="trace_abc123",
     events=[
@@ -513,7 +541,7 @@ from drip import (
 
 try:
     result = client.charge(
-        customer_id="customer_123",
+        customer_id=customer.id,
         meter="api_calls",
         quantity=1
     )
@@ -539,7 +567,7 @@ Use idempotency keys to prevent duplicate charges on retries:
 
 ```python
 result = client.charge(
-    customer_id="customer_123",
+    customer_id=customer.id,
     meter="api_calls",
     quantity=1,
     idempotency_key="req_abc123_step_1"
