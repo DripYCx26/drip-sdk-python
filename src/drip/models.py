@@ -277,8 +277,11 @@ class ListChargesResponse(BaseModel):
 class ChargeStatusResult(BaseModel):
     """Quick charge status check result."""
 
+    id: str
     status: ChargeStatus
     tx_hash: str | None = Field(default=None, alias="txHash")
+    confirmed_at: str | None = Field(default=None, alias="confirmedAt")
+    failure_reason: str | None = Field(default=None, alias="failureReason")
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -344,6 +347,9 @@ class Webhook(BaseModel):
     events: list[str]
     description: str | None = None
     is_active: bool = Field(alias="isActive")
+    health_status: str = Field(default="HEALTHY", alias="healthStatus")
+    consecutive_failures: int = Field(default=0, alias="consecutiveFailures")
+    last_health_change: str | None = Field(default=None, alias="lastHealthChange")
     created_at: str = Field(alias="createdAt")
     updated_at: str | None = Field(default=None, alias="updatedAt")
     stats: WebhookStats | None = None
@@ -378,6 +384,7 @@ class TestWebhookResponse(BaseModel):
     message: str
     delivery_id: str | None = Field(alias="deliveryId")
     status: str
+    response_code: int | None = Field(default=None, alias="responseCode")
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -413,6 +420,7 @@ class Workflow(BaseModel):
     name: str
     slug: str
     product_surface: str = Field(alias="productSurface")
+    chain: str | None = None
     description: str | None = None
     is_active: bool = Field(alias="isActive")
     created_at: str = Field(alias="createdAt")

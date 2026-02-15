@@ -66,6 +66,7 @@ from .models import (
     ListCustomersResponse,
     ListMetersResponse,
     ListWebhooksResponse,
+    Meter,
     ListWorkflowsResponse,
     RecordRunResult,
     RetryOptions,
@@ -1659,8 +1660,21 @@ class Drip:
         Returns:
             List of meters with pricing information.
         """
-        response = self._get("/meters")
-        return ListMetersResponse.model_validate(response)
+        response = self._get("/pricing-plans")
+        plans = response.get("data", [])
+        return ListMetersResponse(
+            data=[
+                Meter(
+                    id=p["id"],
+                    name=p["name"],
+                    meter=p["unitType"],
+                    unitPriceUsd=p["unitPriceUsd"],
+                    isActive=p["isActive"],
+                )
+                for p in plans
+            ],
+            count=response.get("count", len(plans)),
+        )
 
     # =========================================================================
     # Static Utility Methods
@@ -2858,8 +2872,21 @@ class AsyncDrip:
 
     async def list_meters(self) -> ListMetersResponse:
         """List available usage meters."""
-        response = await self._get("/meters")
-        return ListMetersResponse.model_validate(response)
+        response = await self._get("/pricing-plans")
+        plans = response.get("data", [])
+        return ListMetersResponse(
+            data=[
+                Meter(
+                    id=p["id"],
+                    name=p["name"],
+                    meter=p["unitType"],
+                    unitPriceUsd=p["unitPriceUsd"],
+                    isActive=p["isActive"],
+                )
+                for p in plans
+            ],
+            count=response.get("count", len(plans)),
+        )
 
     # =========================================================================
     # Static Utility Methods
