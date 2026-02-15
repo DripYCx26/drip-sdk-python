@@ -66,6 +66,12 @@ class DripAPIError(DripError):
         super().__init__(message, status_code, code)
         self.response_body = response_body
 
+    def __str__(self) -> str:
+        base = super().__str__()
+        if self.response_body:
+            return f"{base} | response: {self.response_body}"
+        return base
+
 
 class DripValidationError(DripError):
     """
