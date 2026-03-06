@@ -39,7 +39,6 @@ pip install drip-sdk[dotenv]   # or: pip install python-dotenv
 ```env
 # .env
 DRIP_API_KEY=sk_test_...
-DRIP_API_URL=https://api.drippay.dev  # optional, defaults to this
 ```
 
 The SDK auto-loads `.env` files when `python-dotenv` is installed — no extra code needed.
