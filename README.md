@@ -30,6 +30,20 @@ export DRIP_API_KEY=sk_test_...
 export DRIP_API_KEY=pk_test_...
 ```
 
+Or use a `.env` file (recommended):
+
+```bash
+pip install drip-sdk[dotenv]   # or: pip install python-dotenv
+```
+
+```env
+# .env
+DRIP_API_KEY=sk_test_...
+DRIP_API_URL=https://api.drippay.dev/v1  # optional
+```
+
+The SDK auto-loads `.env` files when `python-dotenv` is installed — no extra code needed.
+
 ### 3. Create a customer and track usage
 
 ```python

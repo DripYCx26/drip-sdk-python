@@ -41,6 +41,13 @@ from typing import Any, TypeVar
 
 import httpx
 
+# Auto-load .env files if python-dotenv is installed
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 from ._version import __version__
 from .errors import (
     DripAPIError,
