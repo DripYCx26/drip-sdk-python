@@ -261,26 +261,35 @@ customer = drip.create_customer(
 ## Async Core SDK
 
 ```python
+import asyncio
 from drip import AsyncDrip
 
-async with AsyncDrip(api_key="sk_test_...") as client:
-    await client.ping()
 
-    # Create a customer
-    customer = await client.create_customer(external_customer_id="user_123")
+async def main():
+    async with AsyncDrip(api_key="sk_test_...") as client:
+        await client.ping()
 
-    await client.track_usage(
-        customer_id=customer.id,
-        meter="api_calls",
-        quantity=1
-    )
+        # Create a customer
+        customer = await client.create_customer(external_customer_id="user_123")
 
-    result = await client.record_run(
-        customer_id=customer.id,
-        workflow="research-agent",
-        events=[...],
-        status="COMPLETED"
-    )
+        await client.track_usage(
+            customer_id=customer.id,
+            meter="api_calls",
+            quantity=1
+        )
+
+        result = await client.record_run(
+            customer_id=customer.id,
+            workflow="research-agent",
+            events=[],
+            status="COMPLETED"
+        )
+
+        print(result)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
 ```
 
 ---
