@@ -11,7 +11,7 @@ For billing, webhooks, cost estimation, and advanced features:
 Quick Start:
     >>> from drip.core import Drip
     >>>
-    >>> client = Drip(api_key="drip_sk_...")
+    >>> client = Drip(api_key="sk_test_...")
     >>>
     >>> # Verify connection
     >>> health = client.ping()
@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import os
 import time
+import uuid
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any
@@ -67,7 +68,7 @@ class DripConfig:
     api_key: str
     """Your Drip API key."""
 
-    base_url: str = "https://drip-app-hlunj.ondigitalocean.app/v1"
+    base_url: str = "https://api.drippay.dev/v1"
     """Base URL for the Drip API."""
 
     timeout: float = 30.0
@@ -402,7 +403,7 @@ class Drip:
     Example:
         >>> from drip.core import Drip
         >>>
-        >>> client = Drip(api_key="drip_sk_...")
+        >>> client = Drip(api_key="sk_test_...")
         >>>
         >>> # Verify connection
         >>> health = client.ping()
@@ -432,7 +433,7 @@ class Drip:
     def __init__(
         self,
         api_key: str | None = None,
-        base_url: str = "https://drip-app-hlunj.ondigitalocean.app/v1",
+        base_url: str = "https://api.drippay.dev/v1",
         timeout: float = 30.0,
     ) -> None:
         """
@@ -736,8 +737,7 @@ class Drip:
             "usageType": meter,
             "quantity": quantity,
         }
-        if idempotency_key:
-            payload["idempotencyKey"] = idempotency_key
+        payload["idempotencyKey"] = idempotency_key or str(uuid.uuid4())
         if units:
             payload["units"] = units
         if description:
@@ -1046,8 +1046,7 @@ class Drip:
             payload["parentEventId"] = parent_event_id
         if span_id:
             payload["spanId"] = span_id
-        if idempotency_key:
-            payload["idempotencyKey"] = idempotency_key
+        payload["idempotencyKey"] = idempotency_key or str(uuid.uuid4())
         if metadata:
             payload["metadata"] = metadata
 
@@ -1083,7 +1082,11 @@ class Drip:
             ...     {"runId": run.id, "eventType": "llm.call", "quantity": 1500},
             ... ])
         """
-        data = self._request("POST", "/run-events/batch", json={"events": events})
+        normalized = [
+            {**evt, "idempotencyKey": evt.get("idempotencyKey") or str(uuid.uuid4())}
+            for evt in events
+        ]
+        data = self._request("POST", "/run-events/batch", json={"events": normalized})
 
         return EmitEventsBatchResult(
             success=data.get("success", True),
@@ -1286,7 +1289,7 @@ class AsyncDrip:
     Example:
         >>> from drip.core import AsyncDrip
         >>>
-        >>> async with AsyncDrip(api_key="drip_sk_...") as client:
+        >>> async with AsyncDrip(api_key="sk_test_...") as client:
         ...     health = await client.ping()
         ...     print(f"API healthy: {health['ok']}")
     """
@@ -1294,7 +1297,7 @@ class AsyncDrip:
     def __init__(
         self,
         api_key: str | None = None,
-        base_url: str = "https://drip-app-hlunj.ondigitalocean.app/v1",
+        base_url: str = "https://api.drippay.dev/v1",
         timeout: float = 30.0,
     ) -> None:
         """Create a new async Drip SDK client."""

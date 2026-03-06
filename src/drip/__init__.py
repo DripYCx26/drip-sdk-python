@@ -12,7 +12,7 @@ Quick Start:
     >>> from drip import Drip
     >>>
     >>> # Initialize the client
-    >>> client = Drip(api_key="drip_sk_...")
+    >>> client = Drip(api_key="sk_test_...")
     >>>
     >>> # Create a customer
     >>> customer = client.create_customer(
@@ -31,7 +31,7 @@ Quick Start:
 Async Usage:
     >>> from drip import AsyncDrip
     >>>
-    >>> async with AsyncDrip(api_key="drip_sk_...") as client:
+    >>> async with AsyncDrip(api_key="sk_test_...") as client:
     ...     customer = await client.create_customer(
     ...         onchain_address="0x123..."
     ...     )
@@ -56,11 +56,10 @@ Flask Integration:
 
 Environment Variables:
     DRIP_API_KEY: Your Drip API key (alternative to passing api_key)
-    DRIP_API_URL: Custom API base URL (defaults to https://drip-app-hlunj.ondigitalocean.app/v1)
+    DRIP_API_URL: Custom API base URL (defaults to https://api.drippay.dev/v1)
 """
 
-__version__ = "1.0.7"
-
+from ._version import __version__
 from .client import AsyncDrip, Drip
 
 # ============================================================================
@@ -88,11 +87,11 @@ class _DripProxy:
     Example:
         >>> from drip import drip
         >>>
-        >>> # One line to track usage
-        >>> drip.track_usage(customer_id="cust_123", meter="api_calls", quantity=1)
+        >>> # One line to track usage (customer_id from create_customer())
+        >>> drip.track_usage(customer_id=customer.id, meter="api_calls", quantity=1)
         >>>
         >>> # One line to charge
-        >>> drip.charge(customer_id="cust_123", meter="api_calls", quantity=1)
+        >>> drip.charge(customer_id=customer.id, meter="api_calls", quantity=1)
     """
 
     def __getattr__(self, name: str):
@@ -116,9 +115,9 @@ from .models import (
     Charge,
     ChargeInfo,
     ChargeParams,
+    ChargeAsyncResult,
     ChargeResult,
     ChargeStatus,
-    ChargeStatusResult,
     CheckoutParams,
     CheckoutResult,
     CostEstimateLineItem,
@@ -136,13 +135,19 @@ from .models import (
     EndRunParams,
     EndRunResult,
     EventResult,
+    EventTrace,
+    ExecutionEvent,
     HypotheticalUsageItem,
     IdempotencyKeyParams,
     ListChargesOptions,
     ListChargesResponse,
+    ListEventsResponse,
     ListCustomersOptions,
+    CreateSubscriptionParams,
     ListCustomersResponse,
     ListMetersResponse,
+    ListSubscriptionsOptions,
+    ListSubscriptionsResponse,
     ListWebhooksResponse,
     ListWorkflowsResponse,
     Meter,
@@ -152,12 +157,20 @@ from .models import (
     RecordRunResult,
     RetryOptions,
     RotateWebhookSecretResponse,
+    RunDetails,
+    RunDetailsLinks,
+    RunDetailsTotals,
     RunResult,
     RunStatus,
     RunTimeline,
     StartRunParams,
+    Subscription,
+    SubscriptionInterval,
+    SubscriptionStatus,
     TestWebhookResponse,
     TimelineEvent,
+    TimelineRunInfo,
+    TimelineTotals,
     TrackUsageResult,
     Webhook,
     WebhookEventType,
@@ -166,6 +179,10 @@ from .models import (
     WrapApiCallResult,
     X402PaymentProof,
     X402PaymentRequest,
+    EntitlementCheckResult,
+    CustomerSpendingCap,
+    ListSpendingCapsResponse,
+    SpendingCapType,
 )
 from .resilience import (
     CircuitBreaker,
@@ -241,7 +258,6 @@ __all__ = [
     "Charge",
     "ListChargesOptions",
     "ListChargesResponse",
-    "ChargeStatusResult",
     # Track usage (no billing)
     "TrackUsageResult",
     # Wrap API Call
@@ -263,12 +279,22 @@ __all__ = [
     "DeleteWebhookResponse",
     "TestWebhookResponse",
     "RotateWebhookSecretResponse",
+    # Subscription models
+    "CreateSubscriptionParams",
+    "Subscription",
+    "SubscriptionInterval",
+    "SubscriptionStatus",
+    "ListSubscriptionsOptions",
+    "ListSubscriptionsResponse",
     # Workflow & Run models
     "CreateWorkflowParams",
     "Workflow",
     "ListWorkflowsResponse",
     "StartRunParams",
     "RunResult",
+    "RunDetails",
+    "RunDetailsTotals",
+    "RunDetailsLinks",
     "EndRunParams",
     "EndRunResult",
     "EmitEventParams",
@@ -276,6 +302,8 @@ __all__ = [
     "EmitEventsBatchResult",
     "RunTimeline",
     "TimelineEvent",
+    "TimelineRunInfo",
+    "TimelineTotals",
     "RecordRunEvent",
     "RecordRunParams",
     "RecordRunResult",
@@ -286,6 +314,12 @@ __all__ = [
     "X402PaymentProof",
     "X402PaymentRequest",
     "IdempotencyKeyParams",
+    # Entitlement models
+    "EntitlementCheckResult",
+    # Spending cap models
+    "CustomerSpendingCap",
+    "ListSpendingCapsResponse",
+    "SpendingCapType",
     # Utility functions
     "generate_idempotency_key",
     "generate_webhook_signature",

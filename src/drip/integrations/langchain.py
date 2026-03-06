@@ -9,8 +9,8 @@ Example:
     >>> from langchain.llms import OpenAI
     >>>
     >>> handler = DripCallbackHandler(
-    ...     api_key="drip_sk_...",
-    ...     customer_id="cus_123",
+    ...     api_key="sk_test_...",
+    ...     customer_id=customer.id,
     ...     workflow="chatbot"
     ... )
     >>>
@@ -190,8 +190,8 @@ class DripCallbackHandler:
         >>> from langchain.llms import OpenAI
         >>>
         >>> handler = DripCallbackHandler(
-        ...     api_key="drip_sk_...",
-        ...     customer_id="cus_123",
+        ...     api_key="sk_test_...",
+        ...     customer_id=customer.id,
         ...     workflow="chatbot"
         ... )
         >>>
@@ -838,8 +838,8 @@ class AsyncDripCallbackHandler:
         >>> from langchain.llms import OpenAI
         >>>
         >>> handler = AsyncDripCallbackHandler(
-        ...     api_key="drip_sk_...",
-        ...     customer_id="cus_123",
+        ...     api_key="sk_test_...",
+        ...     customer_id=customer.id,
         ...     workflow="chatbot"
         ... )
         >>>

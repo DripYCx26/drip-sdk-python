@@ -127,6 +127,8 @@ class PaymentRequestHeaders:
     x_payment_required: str = "true"
     x_payment_amount: str = ""
     x_payment_recipient: str = ""
+    x_payment_currency: str = "USDC"
+    x_payment_chain: str = "base-sepolia"
     x_payment_usage_id: str = ""
     x_payment_description: str = ""
     x_payment_expires: str = ""
@@ -139,6 +141,8 @@ class PaymentRequestHeaders:
             "X-Payment-Required": self.x_payment_required,
             "X-Payment-Amount": self.x_payment_amount,
             "X-Payment-Recipient": self.x_payment_recipient,
+            "X-Payment-Currency": self.x_payment_currency,
+            "X-Payment-Chain": self.x_payment_chain,
             "X-Payment-Usage-Id": self.x_payment_usage_id,
             "X-Payment-Description": self.x_payment_description,
             "X-Payment-Expires": self.x_payment_expires,

@@ -4,13 +4,13 @@ build-backend = "hatchling.build"
 
 [project]
 name = "drip-sdk"
-version = "1.2.2"
+version = "1.2.3"
 description = "Official Python SDK for Drip - usage-based billing infrastructure with on-chain settlement"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
 authors = [
-    { name = "Drip", email = "sdk@drip.dev" }
+    { name = "Drip", email = "sdk@drippay.dev" }
 ]
 keywords = [
     "drip",
@@ -65,8 +65,8 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://drip.dev"
-Documentation = "https://docs.drip.dev"
+Homepage = "https://drippay.dev"
+Documentation = "https://docs.drippay.dev"
 Repository = "https://github.com/drip/sdk-python"
 
 [tool.hatch.build.targets.wheel]

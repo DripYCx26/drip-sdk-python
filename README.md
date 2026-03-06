@@ -83,8 +83,8 @@ drip.record_run(
     customer_id=customer.id,
     workflow="research-agent",
     events=[
-        {"eventType": "llm.call", "quantity": 1700, "units": "tokens"},
-        {"eventType": "tool.call", "quantity": 1},
+        {"event_type": "llm.call", "quantity": 1700, "units": "tokens"},
+        {"event_type": "tool.call", "quantity": 1},
     ],
     status="COMPLETED"
 )
@@ -118,13 +118,13 @@ print(f"Customer {customer.id}: usage + run recorded")
 
 ## Idempotency Keys
 
-Every mutating SDK method (`charge`, `track_usage`, `emit_event`) accepts an optional `idempotency_key` parameter. The server uses this key to deduplicate requests — if two requests share the same key, only the first is processed.
+Every mutating SDK method (`charge`, `track_usage`, `emit_event`) requires an `idempotency_key`. The server uses this key to deduplicate requests — if two requests share the same key, only the first is processed. The parameter is optional in the method signature because **the SDK always generates one for you if you don't provide it**.
 
 `record_run` generates idempotency keys internally for its batch events (using `external_run_id` when provided, otherwise deterministic keys).
 
 ### Auto-generated keys (default)
 
-When you omit `idempotency_key`, the SDK generates one automatically. The auto key is:
+When you omit `idempotency_key`, the SDK generates one automatically — this works for both `drip.core.Drip` and the full `Drip` client. The auto key is:
 
 - **Unique per call** — two separate calls with identical parameters produce different keys (a monotonic counter ensures this).
 - **Stable across retries** — the key is generated once and reused for all retry attempts of that call, so network retries are safely deduplicated.
@@ -176,13 +176,23 @@ pip install drip-sdk[all]      # everything
 
 ## Core SDK Methods
 
+All methods are on the `Drip` / `AsyncDrip` class. Start with these for pilots:
+
 | Method | Description |
 |--------|-------------|
 | `ping()` | Verify API connection |
 | `create_customer(...)` | Create a customer (see below) |
+| `get_or_create_customer(external_customer_id)` | Idempotently create or retrieve a customer by external ID |
 | `get_customer(customer_id)` | Get customer details |
 | `list_customers(options)` | List all customers |
 | `track_usage(params)` | Record metered usage |
+| `charge(customer_id, meter, quantity, ...)` | Create a billable charge (sync — waits for settlement) |
+| `charge_async(customer_id, meter, quantity, ...)` | Async charge — returns immediately, processes in background |
+| `list_charges(options)` | List charges for your business |
+| `get_charge(charge_id)` | Get a single charge by ID |
+| `list_events(options)` | List execution events with filters |
+| `get_event(event_id)` | Get a single event by ID |
+| `get_event_trace(event_id)` | Get event causality trace (ancestors, children, retries) |
 | `record_run(params)` | Log complete agent run (simplified) |
 | `start_run(params)` | Start execution trace |
 | `emit_event(params)` | Log event within run |
@@ -190,6 +200,18 @@ pip install drip-sdk[all]      # everything
 | `end_run(run_id, params)` | Complete execution trace |
 | `get_run(run_id)` | Get run details and summary |
 | `get_run_timeline(run_id)` | Get execution timeline |
+| `get_balance(customer_id)` | Get customer balance |
+| `check_entitlement(customer_id, feature_key, quantity?)` | Pre-request authorization check |
+| `run(workflow, customer_id)` | Context manager for run tracking (see below) |
+
+### Run Context Manager
+
+```python
+with drip.run("research-agent", customer_id=customer.id) as run:
+    run.event("llm.call", quantity=1700, units="tokens")
+    run.event("tool.call", quantity=1)
+# Run auto-completes on exit, or marks FAILED on exception
+```
 
 ### Creating Customers
 
@@ -259,13 +281,44 @@ async with AsyncDrip(api_key="sk_test_...") as client:
 
 ---
 
-## Full SDK (Billing, Webhooks, Integrations)
+## Full SDK (Billing, Entitlements, Webhooks, Subscriptions, Invoices)
 
-For billing, webhooks, middleware, and advanced features:
+For billing, entitlements, subscriptions, invoices, contracts, webhooks, middleware, and advanced features:
 
 ```python
 from drip import Drip
+
+client = Drip(api_key="sk_test_...")
+
+# Check if a customer can use a feature before processing
+check = client.check_entitlement(customer.id, "search")
+
+if not check.allowed:
+    # Over quota — return 429 without wasting compute
+    pass
 ```
+
+Key methods:
+
+| Method | Description |
+|--------|-------------|
+| `get_balance(customer_id)` | Get customer balance (USDC, pending, available) |
+| `check_entitlement(customer_id, feature_key, quantity?)` | Pre-request authorization check (allowed/denied + remaining quota) |
+| `set_customer_spending_cap(customer_id, cap_type, limit_value)` | Set daily/monthly/single-charge spending cap |
+| `get_customer_spending_caps(customer_id)` | List active spending caps |
+| `remove_customer_spending_cap(customer_id, cap_id)` | Remove a spending cap |
+| `checkout(params)` | Create hosted checkout session for top-ups |
+
+Highlights:
+- **Billing** — `charge()`, `list_charges()`, `get_charge()`, `get_balance()`
+- **Cost Estimation** — `estimate_from_usage()`, `estimate_from_hypothetical()` for budget planning
+- **Spending Caps** — per-customer daily/monthly limits with multi-level alerts at 50%, 80%, 95%, 100%
+- **Entitlements** — pre-request quota gating with `check_entitlement()`
+- **Subscription billing** — create, update, pause, resume, cancel
+- **Invoices** — available via REST API (SDK methods planned)
+- **Contracts** — available via REST API (SDK methods planned)
+- **Webhooks** — create, verify, manage webhook endpoints
+- **Middleware** — FastAPI and Flask integrations
 
 See **[FULL_SDK.md](./FULL_SDK.md)** for complete documentation.
 
@@ -298,7 +351,7 @@ except DripError as e:
 ## Links
 
 - [Full SDK Documentation](./FULL_SDK.md)
-- [API Documentation](https://drippay.dev/api-reference)
+- [API Documentation](https://docs.drippay.dev/api-reference)
 - [PyPI](https://pypi.org/project/drip-sdk/)
 
 ## License

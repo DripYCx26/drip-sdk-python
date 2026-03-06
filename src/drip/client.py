@@ -35,12 +35,15 @@ import random
 import threading
 import time
 from collections.abc import Callable
+from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime
 from typing import Any, TypeVar
 
 import httpx
 
+from ._version import __version__
 from .errors import (
+    DripAPIError,
     DripAuthenticationError,
     DripError,
     DripNetworkError,
@@ -49,22 +52,28 @@ from .errors import (
 from .models import (
     BalanceResult,
     Charge,
+    ChargeAsyncResult,
     ChargeResult,
-    ChargeStatusResult,
     CheckoutResult,
     CostEstimateResponse,
     CreateWebhookResponse,
     Customer,
+    CustomerSpendingCap,
     CustomerStatus,
     DeleteWebhookResponse,
     DripConfig,
     EmitEventsBatchResult,
     EndRunResult,
     EventResult,
+    EventTrace,
+    ExecutionEvent,
     HypotheticalUsageItem,
     ListChargesResponse,
+    ListEventsResponse,
     ListCustomersResponse,
     ListMetersResponse,
+    ListSpendingCapsResponse,
+    ListSubscriptionsResponse,
     ListWebhooksResponse,
     Meter,
     ListWorkflowsResponse,
@@ -73,15 +82,22 @@ from .models import (
     RotateWebhookSecretResponse,
     RunResult,
     RunTimeline,
+    SpendingCapType,
+    Subscription,
+    SubscriptionStatus,
     TestWebhookResponse,
     TimelineEvent,
     TimelineRunInfo,
     TimelineTotals,
     TrackUsageResult,
     Webhook,
+    WebhookFilters,
     Workflow,
     WrapApiCallResult,
 )
+
+# Sentinel to distinguish "not provided" from None (which means "remove")
+_UNSET: Any = object()
 from .resilience import (
     ResilienceConfig,
     ResilienceManager,
@@ -230,7 +246,7 @@ class Drip:
     Example:
         >>> from drip import Drip
         >>>
-        >>> client = Drip(api_key="drip_sk_...")
+        >>> client = Drip(api_key="sk_test_...")
         >>>
         >>> # Create a customer
         >>> customer = client.create_customer(
@@ -246,7 +262,7 @@ class Drip:
         ... )
     """
 
-    DEFAULT_BASE_URL = "https://drip-app-hlunj.ondigitalocean.app/v1"
+    DEFAULT_BASE_URL = "https://api.drippay.dev/v1"
     DEFAULT_TIMEOUT = 30.0
 
     def __init__(
@@ -262,7 +278,7 @@ class Drip:
         Args:
             api_key: API key from Drip dashboard. If not provided,
                      reads from DRIP_API_KEY environment variable.
-            base_url: Base URL for the API. Defaults to https://drip-app-hlunj.ondigitalocean.app/v1.
+            base_url: Base URL for the API. Defaults to https://api.drippay.dev/v1.
                       Can also be set via DRIP_API_URL environment variable.
             timeout: Request timeout in seconds. Defaults to 30.
             resilience: Enable production resilience features (rate limiting,
@@ -276,14 +292,14 @@ class Drip:
 
         Example:
             >>> # Basic usage
-            >>> client = Drip(api_key="drip_sk_...")
+            >>> client = Drip(api_key="sk_test_...")
             >>>
             >>> # With production resilience (recommended)
-            >>> client = Drip(api_key="drip_sk_...", resilience=True)
+            >>> client = Drip(api_key="sk_test_...", resilience=True)
             >>>
             >>> # With custom resilience settings
             >>> client = Drip(
-            ...     api_key="drip_sk_...",
+            ...     api_key="sk_test_...",
             ...     resilience=ResilienceConfig.high_throughput()
             ... )
         """
@@ -293,8 +309,19 @@ class Drip:
                 "API key is required. Pass it directly or set DRIP_API_KEY environment variable."
             )
 
+        # Detect key type from prefix (mirrors TS SDK behavior)
+        if self._api_key.startswith("sk_"):
+            self._key_type: str = "secret"
+        elif self._api_key.startswith("pk_"):
+            self._key_type = "public"
+        else:
+            self._key_type = "unknown"
+
         self._base_url = (
-            base_url or os.environ.get("DRIP_API_URL") or self.DEFAULT_BASE_URL
+            base_url
+            or os.environ.get("DRIP_API_URL")
+            or os.environ.get("DRIP_BASE_URL")
+            or self.DEFAULT_BASE_URL
         ).rstrip("/")
         self._timeout = timeout or self.DEFAULT_TIMEOUT
 
@@ -306,13 +333,17 @@ class Drip:
         else:
             self._resilience = None
 
+        # Customer resolution cache: external_customer_id -> drip_customer_id
+        self._customer_cache: dict[str, str] = {}
+        self._cache_lock = threading.Lock()
+
         self._client = httpx.Client(
             base_url=self._base_url,
             timeout=self._timeout,
             headers={
                 "Authorization": f"Bearer {self._api_key}",
                 "Content-Type": "application/json",
-                "User-Agent": "drip-sdk-python/1.0.7",
+                "User-Agent": f"drip-sdk-python/{__version__}",
             },
         )
 
@@ -343,6 +374,15 @@ class Drip:
     def resilience(self) -> ResilienceManager | None:
         """Get the resilience manager (if enabled)."""
         return self._resilience
+
+    def _assert_secret_key(self, operation: str) -> None:
+        """Raise DripAuthenticationError if using a public key for a secret-key-only operation."""
+        if self._key_type == "public":
+            raise DripAuthenticationError(
+                f"{operation} requires a secret key (sk_). You are using a public key (pk_), "
+                "which cannot access this endpoint. Use a secret key for webhook, API key, "
+                "and feature flag management."
+            )
 
     def get_metrics(self) -> dict[str, Any] | None:
         """
@@ -571,8 +611,76 @@ class Drip:
         return self._request("DELETE", path)
 
     # =========================================================================
+    # Customer Resolution (internal)
+    # =========================================================================
+
+    def _resolve_customer(self, user: str) -> str:
+        """Resolve an external user ID to a Drip customer ID, creating if needed."""
+        with self._cache_lock:
+            if user in self._customer_cache:
+                return self._customer_cache[user]
+
+        # Try to create — auto-provisions smart account on the backend
+        try:
+            customer = self.create_customer(external_customer_id=user)
+            with self._cache_lock:
+                self._customer_cache[user] = customer.id
+            return customer.id
+        except DripAPIError as e:
+            if e.status_code != 409:
+                raise
+            # Customer already exists — extract ID from 409 response
+            existing_id = (e.response_body or {}).get("existingCustomerId")
+            if existing_id:
+                with self._cache_lock:
+                    self._customer_cache[user] = existing_id
+                return existing_id
+            # Fallback: fetch by listing
+            result = self.list_customers(limit=100)
+            for c in result.data:
+                if c.external_customer_id:
+                    with self._cache_lock:
+                        self._customer_cache[c.external_customer_id] = c.id
+            with self._cache_lock:
+                if user in self._customer_cache:
+                    return self._customer_cache[user]
+            raise DripError(
+                f"Customer with external ID '{user}' exists but could not be resolved"
+            )
+
+    # =========================================================================
     # Customer Management
     # =========================================================================
+
+    def get_or_create_customer(
+        self,
+        external_customer_id: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> Customer:
+        """
+        Get or create a customer by external ID. Never errors on duplicate.
+
+        Args:
+            external_customer_id: Your user/customer ID.
+            metadata: Optional metadata (only used on first creation).
+
+        Returns:
+            The Customer object (created or existing).
+        """
+        try:
+            customer = self.create_customer(
+                external_customer_id=external_customer_id,
+                metadata=metadata,
+            )
+            with self._cache_lock:
+                self._customer_cache[external_customer_id] = customer.id
+            return customer
+        except DripAPIError as e:
+            if e.status_code != 409:
+                raise
+            # Already exists — resolve and fetch
+            customer_id = self._resolve_customer(external_customer_id)
+            return self.get_customer(customer_id)
 
     def create_customer(
         self,
@@ -629,6 +737,7 @@ class Drip:
         self,
         status: CustomerStatus | None = None,
         limit: int = 100,
+        offset: int = 0,
     ) -> ListCustomersResponse:
         """
         List customers with optional filtering.
@@ -636,11 +745,14 @@ class Drip:
         Args:
             status: Filter by status (ACTIVE, LOW_BALANCE, PAUSED).
             limit: Maximum number of results (1-100).
+            offset: Number of customers to skip (for pagination).
 
         Returns:
             List of customers with count.
         """
         params: dict[str, Any] = {"limit": limit}
+        if offset:
+            params["offset"] = offset
         if status:
             params["status"] = status.value
 
@@ -661,35 +773,116 @@ class Drip:
         return BalanceResult.model_validate(response)
 
     # =========================================================================
+    # Customer Spending Caps
+    # =========================================================================
+
+    def set_customer_spending_cap(
+        self,
+        customer_id: str,
+        cap_type: SpendingCapType,
+        limit_value: float,
+        auto_block: bool = True,
+    ) -> CustomerSpendingCap:
+        """
+        Set or update a per-customer spending cap.
+
+        Args:
+            customer_id: The customer ID.
+            cap_type: Type of cap (DAILY_CHARGE_LIMIT, MONTHLY_CHARGE_LIMIT, SINGLE_CHARGE_LIMIT).
+            limit_value: Spending limit in USDC.
+            auto_block: Auto-block charges when cap is reached (default: True).
+
+        Returns:
+            The created or updated spending cap.
+
+        Example::
+
+            cap = drip.set_customer_spending_cap(
+                "cust_abc123",
+                SpendingCapType.DAILY_CHARGE_LIMIT,
+                100.0,
+            )
+        """
+        body: dict[str, Any] = {
+            "capType": cap_type.value,
+            "limitValue": limit_value,
+            "autoBlock": auto_block,
+        }
+        response = self._put(f"/customers/{customer_id}/spending-cap", json=body)
+        return CustomerSpendingCap.model_validate(response)
+
+    def get_customer_spending_caps(
+        self,
+        customer_id: str,
+    ) -> ListSpendingCapsResponse:
+        """
+        List active spending caps for a customer.
+
+        Args:
+            customer_id: The customer ID.
+
+        Returns:
+            List of active spending caps.
+        """
+        response = self._get(f"/customers/{customer_id}/spending-caps")
+        return ListSpendingCapsResponse.model_validate(response)
+
+    def remove_customer_spending_cap(
+        self,
+        customer_id: str,
+        cap_id: str,
+    ) -> None:
+        """
+        Remove (deactivate) a spending cap.
+
+        Args:
+            customer_id: The customer ID.
+            cap_id: The spending cap ID to remove.
+        """
+        self._delete(f"/customers/{customer_id}/spending-caps/{cap_id}")
+
+    # =========================================================================
     # Charging & Usage
     # =========================================================================
 
     def charge(
         self,
-        customer_id: str,
-        meter: str,
-        quantity: float,
+        customer_id: str | None = None,
+        meter: str = "",
+        quantity: float = 0,
         idempotency_key: str | None = None,
         metadata: dict[str, Any] | None = None,
+        *,
+        user: str | None = None,
     ) -> ChargeResult:
         """
-        Create a charge for usage.
+        Charge a customer for usage.
 
-        This is the primary billing method. It records usage and charges
-        the customer's account.
+        Pass ``user`` (your user ID) to auto-create and resolve the customer,
+        or ``customer_id`` if you already have the Drip ID.
 
         Args:
-            customer_id: The customer ID.
-            meter: Usage meter type (e.g., "api_calls", "tokens").
+            customer_id: Drip customer ID (use this OR ``user``).
+            meter: Usage meter type (e.g., "api_calls", "tokens", "compute_seconds").
             quantity: Amount to charge.
             idempotency_key: Optional key to prevent duplicate charges.
             metadata: Optional metadata.
+            user: Your external user ID. Auto-creates customer on first use.
 
         Returns:
-            ChargeResult with charge details and transaction hash.
+            ChargeResult with charge details.
+
+        Example::
+
+            # Simplest — just your user ID, meter, and quantity
+            drip.charge(user="user_123", meter="api_calls", quantity=1)
         """
+        resolved_id = self._resolve_customer(user) if user else customer_id
+        if not resolved_id:
+            raise DripError("Either 'customer_id' or 'user' is required")
+
         body: dict[str, Any] = {
-            "customerId": customer_id,
+            "customerId": resolved_id,
             "usageType": meter,
             "quantity": quantity,
         }
@@ -721,6 +914,7 @@ class Drip:
         customer_id: str | None = None,
         status: str | None = None,
         limit: int = 100,
+        offset: int = 0,
     ) -> ListChargesResponse:
         """
         List charges with optional filtering.
@@ -729,11 +923,14 @@ class Drip:
             customer_id: Filter by customer.
             status: Filter by status.
             limit: Maximum results (1-100).
+            offset: Number of charges to skip (for pagination).
 
         Returns:
             List of charges with count.
         """
         params: dict[str, Any] = {"limit": limit}
+        if offset:
+            params["offset"] = offset
         if customer_id:
             params["customerId"] = customer_id
         if status:
@@ -742,64 +939,50 @@ class Drip:
         response = self._get("/charges", params=params)
         return ListChargesResponse.model_validate(response)
 
-    def get_charge_status(self, charge_id: str) -> ChargeStatusResult:
-        """
-        Quick status check for a charge.
-
-        Args:
-            charge_id: The charge ID.
-
-        Returns:
-            Status and optional transaction hash.
-        """
-        response = self._get(f"/charges/{charge_id}/status")
-        return ChargeStatusResult.model_validate(response)
-
     def track_usage(
         self,
-        customer_id: str,
-        meter: str,
-        quantity: float,
+        customer_id: str | None = None,
+        meter: str = "",
+        quantity: float = 0,
         idempotency_key: str | None = None,
         units: str | None = None,
         description: str | None = None,
         metadata: dict[str, Any] | None = None,
+        *,
+        user: str | None = None,
     ) -> TrackUsageResult:
         """
         Record usage for internal visibility WITHOUT billing.
 
-        Use this for:
-        - Tracking internal team usage without charging
-        - Pilot programs where you want visibility before billing
-        - Pre-billing tracking before customer wallet setup
+        Pass ``user`` (your user ID) or ``customer_id``.
 
-        This does NOT:
-        - Create a Charge record
-        - Require customer balance
-        - Require blockchain/wallet setup
-
-        For billing, use `charge()` instead.
+        For billing, use ``charge()`` instead.
 
         Args:
-            customer_id: The customer ID.
+            customer_id: Drip customer ID (use this OR ``user``).
             meter: Usage meter type (e.g., "api_calls", "tokens").
             quantity: Amount to record.
             idempotency_key: Optional key to prevent duplicate records.
-            units: Optional unit label (e.g., "tokens", "requests").
+            units: Optional unit label.
             description: Optional description.
             metadata: Optional metadata.
+            user: Your external user ID. Auto-creates customer on first use.
 
         Returns:
             TrackUsageResult with event ID and confirmation.
         """
+        resolved_id = self._resolve_customer(user) if user else customer_id
+        if not resolved_id:
+            raise DripError("Either 'customer_id' or 'user' is required")
+
         body: dict[str, Any] = {
-            "customerId": customer_id,
+            "customerId": resolved_id,
             "usageType": meter,
             "quantity": quantity,
         }
 
         body["idempotencyKey"] = idempotency_key or _deterministic_idempotency_key(
-            "track", customer_id, meter, quantity
+            "track", resolved_id, meter, quantity
         )
         if units:
             body["units"] = units
@@ -811,15 +994,127 @@ class Drip:
         response = self._post("/usage/internal", json=body)
         return TrackUsageResult.model_validate(response)
 
+    def charge_async(
+        self,
+        customer_id: str | None = None,
+        meter: str = "",
+        quantity: float = 0,
+        idempotency_key: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        *,
+        user: str | None = None,
+    ) -> ChargeAsyncResult:
+        """
+        Charge a customer asynchronously — returns immediately.
+
+        The charge is queued for background processing. Subscribe to
+        ``charge.succeeded`` / ``charge.failed`` webhooks for final status.
+
+        Args:
+            customer_id: Drip customer ID (use this OR ``user``).
+            meter: Usage meter type (e.g., "api_calls", "tokens").
+            quantity: Amount to charge.
+            idempotency_key: Optional key to prevent duplicate charges.
+            metadata: Optional metadata.
+            user: Your external user ID. Auto-creates customer on first use.
+
+        Returns:
+            ChargeAsyncResult with queued charge details.
+        """
+        resolved_id = self._resolve_customer(user) if user else customer_id
+        if not resolved_id:
+            raise DripError("Either 'customer_id' or 'user' is required")
+
+        body: dict[str, Any] = {
+            "customerId": resolved_id,
+            "usageType": meter,
+            "quantity": quantity,
+        }
+
+        body["idempotencyKey"] = idempotency_key or _deterministic_idempotency_key(
+            "chg-async", resolved_id, meter, quantity
+        )
+        if metadata:
+            body["metadata"] = metadata
+
+        response = self._post("/usage/async", json=body)
+        return ChargeAsyncResult.model_validate(response)
+
+    def list_events(
+        self,
+        customer_id: str | None = None,
+        run_id: str | None = None,
+        event_type: str | None = None,
+        outcome: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> ListEventsResponse:
+        """
+        List execution events with optional filters.
+
+        Args:
+            customer_id: Filter by customer.
+            run_id: Filter by run.
+            event_type: Filter by event type.
+            outcome: Filter by outcome (SUCCESS, FAILURE, etc.).
+            limit: Maximum results (1-100).
+            offset: Number of events to skip.
+
+        Returns:
+            Paginated list of events.
+        """
+        params: dict[str, Any] = {"limit": limit, "offset": offset}
+        if customer_id:
+            params["customerId"] = customer_id
+        if run_id:
+            params["runId"] = run_id
+        if event_type:
+            params["eventType"] = event_type
+        if outcome:
+            params["outcome"] = outcome
+
+        response = self._get("/events", params=params)
+        return ListEventsResponse.model_validate(response)
+
+    def get_event(self, event_id: str) -> ExecutionEvent:
+        """
+        Get a single execution event.
+
+        Args:
+            event_id: The event ID.
+
+        Returns:
+            Full event details.
+        """
+        response = self._get(f"/events/{event_id}")
+        return ExecutionEvent.model_validate(response)
+
+    def get_event_trace(self, event_id: str) -> EventTrace:
+        """
+        Get the causality trace for an event.
+
+        Returns ancestors, children, and retry chain.
+
+        Args:
+            event_id: The event ID to trace.
+
+        Returns:
+            Causality trace.
+        """
+        response = self._get(f"/events/{event_id}/trace")
+        return EventTrace.model_validate(response)
+
     def wrap_api_call(
         self,
-        customer_id: str,
-        meter: str,
-        call: Callable[[], T],
-        extract_usage: Callable[[T], float],
+        customer_id: str | None = None,
+        meter: str = "",
+        call: Callable[[], T] = None,  # type: ignore[assignment]
+        extract_usage: Callable[[T], float] = None,  # type: ignore[assignment]
         idempotency_key: str | None = None,
         metadata: dict[str, Any] | None = None,
         retry_options: RetryOptions | None = None,
+        *,
+        user: str | None = None,
     ) -> WrapApiCallResult:
         """
         Wraps an external API call with guaranteed usage recording.
@@ -886,6 +1181,10 @@ class Drip:
             ...     extract_usage=lambda r: r.usage.input_tokens + r.usage.output_tokens,
             ... )
         """
+        resolved_id = self._resolve_customer(user) if user else customer_id
+        if not resolved_id:
+            raise DripError("Either 'customer_id' or 'user' is required")
+
         # Generate idempotency key BEFORE the call - this is the key insight!
         # Even if we crash after the API call, retrying with the same key is safe.
         key = idempotency_key or f"wrap_{int(time.time() * 1000)}_{random.randbytes(8).hex()[:9]}"
@@ -899,7 +1198,7 @@ class Drip:
         # Step 3: Record usage in Drip with retry (idempotency makes this safe)
         charge = _retry_with_backoff_sync(
             lambda: self.charge(
-                customer_id=customer_id,
+                customer_id=resolved_id,
                 meter=meter,
                 quantity=quantity,
                 idempotency_key=key,
@@ -984,7 +1283,7 @@ class Drip:
         if custom_pricing is not None:
             body["customPricing"] = custom_pricing
 
-        response = self._post("/dashboard/cost-estimate/from-usage", json=body)
+        response = self._post("/cost-estimate/from-usage", json=body)
         return CostEstimateResponse.model_validate(response)
 
     def estimate_from_hypothetical(
@@ -1056,7 +1355,7 @@ class Drip:
         if custom_pricing is not None:
             body["customPricing"] = custom_pricing
 
-        response = self._post("/dashboard/cost-estimate/hypothetical", json=body)
+        response = self._post("/cost-estimate/hypothetical", json=body)
         return CostEstimateResponse.model_validate(response)
 
     # =========================================================================
@@ -1091,15 +1390,15 @@ class Drip:
         """
         body: dict[str, Any] = {
             "amount": amount,
-            "returnUrl": return_url,
+            "return_url": return_url,
         }
 
         if customer_id:
-            body["customerId"] = customer_id
+            body["customer_id"] = customer_id
         if external_customer_id:
-            body["externalCustomerId"] = external_customer_id
+            body["external_customer_id"] = external_customer_id
         if cancel_url:
-            body["cancelUrl"] = cancel_url
+            body["cancel_url"] = cancel_url
         if metadata:
             body["metadata"] = metadata
 
@@ -1115,6 +1414,7 @@ class Drip:
         url: str,
         events: list[str],
         description: str | None = None,
+        filters: "WebhookFilters | None" = None,
     ) -> CreateWebhookResponse:
         """
         Create a webhook endpoint.
@@ -1125,10 +1425,12 @@ class Drip:
             url: HTTPS endpoint URL.
             events: List of event types to subscribe to.
             description: Optional description.
+            filters: Optional per-endpoint routing filters.
 
         Returns:
             Webhook with secret (store the secret securely!).
         """
+        self._assert_secret_key("create_webhook")
         body: dict[str, Any] = {
             "url": url,
             "events": events,
@@ -1137,8 +1439,51 @@ class Drip:
         if description:
             body["description"] = description
 
+        if filters:
+            body["filters"] = filters.model_dump(by_alias=True, exclude_none=True)
+
         response = self._post("/webhooks", json=body)
         return CreateWebhookResponse.model_validate(response)
+
+    def update_webhook(
+        self,
+        webhook_id: str,
+        url: str | None = _UNSET,
+        events: list[str] | None = _UNSET,
+        description: str | None = _UNSET,
+        is_active: bool | None = _UNSET,
+        filters: "WebhookFilters | None" = _UNSET,
+    ) -> Webhook:
+        """
+        Update a webhook endpoint.
+
+        Args:
+            webhook_id: The webhook ID.
+            url: New endpoint URL.
+            events: New event subscriptions.
+            description: New description.
+            is_active: Enable/disable the webhook.
+            filters: Per-endpoint routing filters. Pass None to remove.
+
+        Returns:
+            Updated webhook details.
+        """
+        self._assert_secret_key("update_webhook")
+        body: dict[str, Any] = {}
+
+        if url is not _UNSET:
+            body["url"] = url
+        if events is not _UNSET:
+            body["events"] = events
+        if description is not _UNSET:
+            body["description"] = description
+        if is_active is not _UNSET:
+            body["isActive"] = is_active
+        if filters is not _UNSET:
+            body["filters"] = filters.model_dump(by_alias=True, exclude_none=True) if filters else None
+
+        response = self._patch(f"/webhooks/{webhook_id}", json=body)
+        return Webhook.model_validate(response)
 
     def list_webhooks(self) -> ListWebhooksResponse:
         """
@@ -1147,6 +1492,7 @@ class Drip:
         Returns:
             List of webhooks with stats.
         """
+        self._assert_secret_key("list_webhooks")
         response = self._get("/webhooks")
         return ListWebhooksResponse.model_validate(response)
 
@@ -1160,6 +1506,7 @@ class Drip:
         Returns:
             Webhook details.
         """
+        self._assert_secret_key("get_webhook")
         response = self._get(f"/webhooks/{webhook_id}")
         return Webhook.model_validate(response)
 
@@ -1173,6 +1520,7 @@ class Drip:
         Returns:
             Deletion confirmation.
         """
+        self._assert_secret_key("delete_webhook")
         response = self._delete(f"/webhooks/{webhook_id}")
         return DeleteWebhookResponse.model_validate(response)
 
@@ -1186,6 +1534,7 @@ class Drip:
         Returns:
             Test result with delivery ID.
         """
+        self._assert_secret_key("test_webhook")
         response = self._post(f"/webhooks/{webhook_id}/test")
         return TestWebhookResponse.model_validate(response)
 
@@ -1199,8 +1548,216 @@ class Drip:
         Returns:
             New secret (store securely!).
         """
+        self._assert_secret_key("rotate_webhook_secret")
         response = self._post(f"/webhooks/{webhook_id}/rotate-secret")
         return RotateWebhookSecretResponse.model_validate(response)
+
+    # =========================================================================
+    # Subscriptions
+    # =========================================================================
+
+    def create_subscription(
+        self,
+        customer_id: str,
+        name: str,
+        interval: str,
+        price_usdc: float,
+        description: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        trial_days: int | None = None,
+        included_usage: int | None = None,
+        overage_unit_type: str | None = None,
+    ) -> "Subscription":
+        """
+        Create a recurring billing subscription.
+
+        Args:
+            customer_id: The customer ID.
+            name: Subscription name.
+            interval: Billing interval (DAILY, WEEKLY, MONTHLY, ANNUAL).
+            price_usdc: Price per interval in USDC.
+            description: Optional description.
+            metadata: Custom metadata.
+            trial_days: Trial period in days.
+            included_usage: Included usage units per period.
+            overage_unit_type: Usage type for overage metering.
+
+        Returns:
+            The created Subscription object.
+        """
+        from .models import Subscription as SubscriptionModel
+
+        body: dict[str, Any] = {
+            "customerId": customer_id,
+            "name": name,
+            "interval": interval,
+            "priceUsdc": price_usdc,
+        }
+        if description is not None:
+            body["description"] = description
+        if metadata is not None:
+            body["metadata"] = metadata
+        if trial_days is not None:
+            body["trialDays"] = trial_days
+        if included_usage is not None:
+            body["includedUsage"] = included_usage
+        if overage_unit_type is not None:
+            body["overageUnitType"] = overage_unit_type
+
+        response = self._post("/subscriptions", json=body)
+        return SubscriptionModel.model_validate(response)
+
+    def get_subscription(self, subscription_id: str) -> "Subscription":
+        """
+        Get a subscription by ID.
+
+        Args:
+            subscription_id: The subscription ID.
+
+        Returns:
+            The Subscription object.
+        """
+        from .models import Subscription as SubscriptionModel
+
+        response = self._get(f"/subscriptions/{subscription_id}")
+        return SubscriptionModel.model_validate(response)
+
+    def list_subscriptions(
+        self,
+        customer_id: str | None = None,
+        status: str | None = None,
+        limit: int = 100,
+    ) -> "ListSubscriptionsResponse":
+        """
+        List subscriptions with optional filtering.
+
+        Args:
+            customer_id: Filter by customer.
+            status: Filter by status (ACTIVE, PAUSED, CANCELLED, etc.).
+            limit: Maximum results (1-100).
+
+        Returns:
+            List of subscriptions with count.
+        """
+        from .models import ListSubscriptionsResponse as ListSubsResponse
+
+        params: dict[str, Any] = {"limit": limit}
+        if customer_id:
+            params["customerId"] = customer_id
+        if status:
+            params["status"] = status
+
+        response = self._get("/subscriptions", params=params)
+        return ListSubsResponse.model_validate(response)
+
+    def update_subscription(
+        self,
+        subscription_id: str,
+        name: str | None = None,
+        description: str | None = _UNSET,
+        price_usdc: float | None = None,
+        metadata: dict[str, Any] | None = _UNSET,
+        included_usage: int | None = _UNSET,
+        overage_unit_type: str | None = _UNSET,
+    ) -> "Subscription":
+        """
+        Update a subscription. Price changes take effect at next billing period.
+
+        Args:
+            subscription_id: The subscription ID.
+            name: Updated name.
+            description: Updated description.
+            price_usdc: Updated price.
+            metadata: Updated metadata.
+            included_usage: Updated included usage.
+            overage_unit_type: Updated overage unit type.
+
+        Returns:
+            The updated Subscription object.
+        """
+        from .models import Subscription as SubscriptionModel
+
+        body: dict[str, Any] = {}
+        if name is not None:
+            body["name"] = name
+        if description is not _UNSET:
+            body["description"] = description
+        if price_usdc is not None:
+            body["priceUsdc"] = price_usdc
+        if metadata is not _UNSET:
+            body["metadata"] = metadata
+        if included_usage is not _UNSET:
+            body["includedUsage"] = included_usage
+        if overage_unit_type is not _UNSET:
+            body["overageUnitType"] = overage_unit_type
+
+        response = self._patch(f"/subscriptions/{subscription_id}", json=body)
+        return SubscriptionModel.model_validate(response)
+
+    def cancel_subscription(
+        self,
+        subscription_id: str,
+        immediate: bool = False,
+    ) -> "Subscription":
+        """
+        Cancel a subscription. By default cancels at end of current period.
+
+        Args:
+            subscription_id: The subscription ID.
+            immediate: Cancel immediately instead of at period end.
+
+        Returns:
+            The cancelled Subscription object.
+        """
+        from .models import Subscription as SubscriptionModel
+
+        response = self._post(
+            f"/subscriptions/{subscription_id}/cancel",
+            json={"immediate": immediate},
+        )
+        return SubscriptionModel.model_validate(response)
+
+    def pause_subscription(
+        self,
+        subscription_id: str,
+        resume_date: str | None = None,
+    ) -> "Subscription":
+        """
+        Pause an active subscription. No charges while paused.
+
+        Args:
+            subscription_id: The subscription ID.
+            resume_date: ISO date-time string for auto-resume (optional).
+
+        Returns:
+            The paused Subscription object.
+        """
+        from .models import Subscription as SubscriptionModel
+
+        body: dict[str, Any] = {}
+        if resume_date is not None:
+            body["resumeDate"] = resume_date
+
+        response = self._post(
+            f"/subscriptions/{subscription_id}/pause",
+            json=body,
+        )
+        return SubscriptionModel.model_validate(response)
+
+    def resume_subscription(self, subscription_id: str) -> "Subscription":
+        """
+        Resume a paused subscription. Starts a new billing period.
+
+        Args:
+            subscription_id: The subscription ID.
+
+        Returns:
+            The resumed Subscription object.
+        """
+        from .models import Subscription as SubscriptionModel
+
+        response = self._post(f"/subscriptions/{subscription_id}/resume")
+        return SubscriptionModel.model_validate(response)
 
     # =========================================================================
     # Workflows
@@ -1407,20 +1964,63 @@ class Drip:
         Returns:
             Batch result with created count and duplicates.
         """
-        response = self._post("/run-events/batch", json={"events": events})
+        import uuid as _uuid
+        normalized = [
+            {**evt, "idempotencyKey": evt.get("idempotencyKey") or str(_uuid.uuid4())}
+            for evt in events
+        ]
+        response = self._post("/run-events/batch", json={"events": normalized})
         return EmitEventsBatchResult.model_validate(response)
 
-    def get_run_timeline(self, run_id: str) -> RunTimeline:
+    def get_run(self, run_id: str) -> "RunDetails":
         """
-        Get the full timeline for a run.
+        Get run details and summary totals.
+
+        For full event history, use get_run_timeline() instead.
 
         Args:
             run_id: The run ID.
 
         Returns:
+            Run metadata, status, and aggregate totals.
+        """
+        from .models import RunDetails
+
+        response = self._get(f"/runs/{run_id}")
+        return RunDetails.model_validate(response)
+
+    def get_run_timeline(
+        self,
+        run_id: str,
+        *,
+        limit: int | None = None,
+        cursor: str | None = None,
+        include_anomalies: bool | None = None,
+        collapse_retries: bool | None = None,
+    ) -> RunTimeline:
+        """
+        Get the full timeline for a run.
+
+        Args:
+            run_id: The run ID.
+            limit: Max events to return (1-500, default 100).
+            cursor: Cursor for pagination.
+            include_anomalies: Include anomaly detection results (default True).
+            collapse_retries: Collapse retry chains (default True).
+
+        Returns:
             RunTimeline with events and computed totals.
         """
-        data = self._get(f"/runs/{run_id}/timeline")
+        params: dict[str, str] = {}
+        if limit is not None:
+            params["limit"] = str(limit)
+        if cursor is not None:
+            params["cursor"] = cursor
+        if include_anomalies is not None:
+            params["includeAnomalies"] = str(include_anomalies).lower()
+        if collapse_retries is not None:
+            params["collapseRetries"] = str(collapse_retries).lower()
+        data = self._get(f"/runs/{run_id}/timeline", params=params)
 
         # Build run info from the flat timeline response
         run = TimelineRunInfo(
@@ -1650,6 +2250,80 @@ class Drip:
         })
 
     # =========================================================================
+    # Run Context Manager
+    # =========================================================================
+
+    @contextmanager
+    def run(
+        self,
+        workflow: str,
+        customer_id: str | None = None,
+        *,
+        user: str | None = None,
+        external_run_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ):
+        """
+        Context manager for agent runs. Auto-starts, auto-completes, auto-fails.
+
+        Args:
+            workflow: Workflow slug (e.g., "chatbot", "rpc-proxy"). Auto-created if new.
+            customer_id: Drip customer ID (use this OR ``user``).
+            user: Your external user ID.
+            external_run_id: Your internal run ID.
+            metadata: Optional metadata.
+
+        Yields:
+            A RunContext with ``event()`` and ``charge()`` methods.
+
+        Example::
+
+            with drip.run(user="user_123", workflow="my-agent") as run:
+                result = do_work()
+                run.charge("api_calls", 1)
+                run.event("compute_seconds", 2.5)
+            # auto-completes here, or auto-fails on exception
+        """
+        resolved_id = self._resolve_customer(user) if user else customer_id
+        if not resolved_id:
+            raise DripError("Either 'customer_id' or 'user' is required")
+
+        # Resolve workflow to ID
+        workflows_resp = self.list_workflows()
+        match = next(
+            (w for w in workflows_resp.data if w.slug == workflow or w.id == workflow),
+            None,
+        )
+        if match:
+            workflow_id = match.id
+        else:
+            pretty = workflow.replace("_", " ").replace("-", " ").title()
+            created = self._post("/workflows", json={
+                "name": pretty, "slug": workflow, "productSurface": "CUSTOM",
+            })
+            workflow_id = created["id"]
+
+        run_result = self.start_run(
+            customer_id=resolved_id,
+            workflow_id=workflow_id,
+            external_run_id=external_run_id,
+            metadata=metadata,
+        )
+
+        ctx = _RunContext(client=self, run_id=run_result.id, customer_id=resolved_id)
+        try:
+            yield ctx
+            self.end_run(run_result.id, status="COMPLETED")
+        except Exception as exc:
+            self.end_run(
+                run_result.id,
+                status="FAILED",
+                error_message=str(exc),
+                error_code=type(exc).__name__,
+            )
+            raise
+
+    # =========================================================================
     # Meters
     # =========================================================================
 
@@ -1781,6 +2455,135 @@ class Drip:
         )
         return StreamMeter(_charge_fn=self.charge, _options=options)
 
+    # =========================================================================
+    # Entitlement Methods
+    # =========================================================================
+
+    def check_entitlement(
+        self,
+        customer_id: str,
+        feature_key: str,
+        quantity: float = 1,
+    ) -> "EntitlementCheckResult":
+        """
+        Check if a customer is entitled to use a feature.
+
+        Use this before processing expensive requests to avoid wasting compute
+        on customers who are over their quota.
+
+        Args:
+            customer_id: The Drip customer ID.
+            feature_key: Feature key to check (e.g., "search", "api_calls", "tokens").
+            quantity: Quantity to check against the limit (default: 1).
+
+        Returns:
+            EntitlementCheckResult with allowed, remaining, limit, and period info.
+
+        Example:
+            >>> result = client.check_entitlement("cust_123", "search")
+            >>> if not result.allowed:
+            ...     print(f"Over quota! Resets at {result.period_resets_at}")
+        """
+        from .models import EntitlementCheckResult
+
+        body: dict[str, Any] = {
+            "customerId": customer_id,
+            "featureKey": feature_key,
+            "quantity": quantity,
+        }
+
+        response = self._post("/entitlements/check", json=body)
+        return EntitlementCheckResult.model_validate(response)
+
+
+# =============================================================================
+# Run Context Helpers
+# =============================================================================
+
+
+class _RunContext:
+    """Helper yielded by ``Drip.run()``."""
+
+    def __init__(self, client: Drip, run_id: str, customer_id: str) -> None:
+        self._client = client
+        self.run_id = run_id
+        self.customer_id = customer_id
+
+    def event(
+        self,
+        event_type: str,
+        quantity: float | None = None,
+        **kwargs: Any,
+    ) -> EventResult:
+        """Emit an event in the current run."""
+        return self._client.emit_event(
+            run_id=self.run_id,
+            event_type=event_type,
+            quantity=quantity,
+            **kwargs,
+        )
+
+    def charge(
+        self,
+        meter: str,
+        quantity: float,
+        **kwargs: Any,
+    ) -> ChargeResult:
+        """Charge usage and emit an event in the current run."""
+        self._client.emit_event(
+            run_id=self.run_id,
+            event_type=meter,
+            quantity=quantity,
+        )
+        return self._client.charge(
+            customer_id=self.customer_id,
+            meter=meter,
+            quantity=quantity,
+            **kwargs,
+        )
+
+
+class _AsyncRunContext:
+    """Helper yielded by ``AsyncDrip.run()``."""
+
+    def __init__(self, client: AsyncDrip, run_id: str, customer_id: str) -> None:
+        self._client = client
+        self.run_id = run_id
+        self.customer_id = customer_id
+
+    async def event(
+        self,
+        event_type: str,
+        quantity: float | None = None,
+        **kwargs: Any,
+    ) -> EventResult:
+        """Emit an event in the current run."""
+        return await self._client.emit_event(
+            run_id=self.run_id,
+            event_type=event_type,
+            quantity=quantity,
+            **kwargs,
+        )
+
+    async def charge(
+        self,
+        meter: str,
+        quantity: float,
+        **kwargs: Any,
+    ) -> ChargeResult:
+        """Charge usage and emit an event in the current run."""
+        await self._client.emit_event(
+            run_id=self.run_id,
+            event_type=meter,
+            quantity=quantity,
+        )
+        return await self._client.charge(
+            customer_id=self.customer_id,
+            meter=meter,
+            quantity=quantity,
+            **kwargs,
+        )
+
 
 class AsyncDrip:
     """
@@ -1791,13 +2594,13 @@ class AsyncDrip:
     Example:
         >>> from drip import AsyncDrip
         >>>
-        >>> async with AsyncDrip(api_key="drip_sk_...") as client:
+        >>> async with AsyncDrip(api_key="sk_test_...") as client:
         ...     customer = await client.create_customer(
         ...         onchain_address="0x123..."
         ...     )
     """
 
-    DEFAULT_BASE_URL = "https://drip-app-hlunj.ondigitalocean.app/v1"
+    DEFAULT_BASE_URL = "https://api.drippay.dev/v1"
     DEFAULT_TIMEOUT = 30.0
 
     def __init__(
@@ -1822,11 +2625,11 @@ class AsyncDrip:
 
         Example:
             >>> # Basic usage
-            >>> async with AsyncDrip(api_key="drip_sk_...") as client:
+            >>> async with AsyncDrip(api_key="sk_test_...") as client:
             ...     customer = await client.create_customer(...)
             >>>
             >>> # With production resilience (recommended)
-            >>> async with AsyncDrip(api_key="drip_sk_...", resilience=True) as client:
+            >>> async with AsyncDrip(api_key="sk_test_...", resilience=True) as client:
             ...     customer = await client.create_customer(...)
         """
         self._api_key = api_key or os.environ.get("DRIP_API_KEY")
@@ -1835,8 +2638,19 @@ class AsyncDrip:
                 "API key is required. Pass it directly or set DRIP_API_KEY environment variable."
             )
 
+        # Detect key type from prefix (mirrors TS SDK behavior)
+        if self._api_key.startswith("sk_"):
+            self._key_type: str = "secret"
+        elif self._api_key.startswith("pk_"):
+            self._key_type = "public"
+        else:
+            self._key_type = "unknown"
+
         self._base_url = (
-            base_url or os.environ.get("DRIP_API_URL") or self.DEFAULT_BASE_URL
+            base_url
+            or os.environ.get("DRIP_API_URL")
+            or os.environ.get("DRIP_BASE_URL")
+            or self.DEFAULT_BASE_URL
         ).rstrip("/")
         self._timeout = timeout or self.DEFAULT_TIMEOUT
 
@@ -1848,13 +2662,17 @@ class AsyncDrip:
         else:
             self._resilience = None
 
+        # Customer resolution cache: external_customer_id -> drip_customer_id
+        self._customer_cache: dict[str, str] = {}
+        self._cache_lock = asyncio.Lock()
+
         self._client = httpx.AsyncClient(
             base_url=self._base_url,
             timeout=self._timeout,
             headers={
                 "Authorization": f"Bearer {self._api_key}",
                 "Content-Type": "application/json",
-                "User-Agent": "drip-sdk-python/1.0.7",
+                "User-Agent": f"drip-sdk-python/{__version__}",
             },
         )
 
@@ -1885,6 +2703,15 @@ class AsyncDrip:
     def resilience(self) -> ResilienceManager | None:
         """Get the resilience manager (if enabled)."""
         return self._resilience
+
+    def _assert_secret_key(self, operation: str) -> None:
+        """Raise DripAuthenticationError if using a public key for a secret-key-only operation."""
+        if self._key_type == "public":
+            raise DripAuthenticationError(
+                f"{operation} requires a secret key (sk_). You are using a public key (pk_), "
+                "which cannot access this endpoint. Use a secret key for webhook, API key, "
+                "and feature flag management."
+            )
 
     def get_metrics(self) -> dict[str, Any] | None:
         """
@@ -2084,8 +2911,67 @@ class AsyncDrip:
         return await self._request("DELETE", path)
 
     # =========================================================================
+    # Customer Resolution (internal)
+    # =========================================================================
+
+    async def _resolve_customer(self, user: str) -> str:
+        """Resolve an external user ID to a Drip customer ID, creating if needed."""
+        async with self._cache_lock:
+            if user in self._customer_cache:
+                return self._customer_cache[user]
+
+        # Try to create — auto-provisions smart account on the backend
+        try:
+            customer = await self.create_customer(external_customer_id=user)
+            async with self._cache_lock:
+                self._customer_cache[user] = customer.id
+            return customer.id
+        except DripAPIError as e:
+            if e.status_code != 409:
+                raise
+            # Customer already exists — extract ID from 409 response
+            existing_id = (e.response_body or {}).get("existingCustomerId")
+            if existing_id:
+                async with self._cache_lock:
+                    self._customer_cache[user] = existing_id
+                return existing_id
+            # Fallback: fetch by listing
+            result = await self.list_customers(limit=100)
+            for c in result.data:
+                if c.external_customer_id:
+                    async with self._cache_lock:
+                        self._customer_cache[c.external_customer_id] = c.id
+            async with self._cache_lock:
+                if user in self._customer_cache:
+                    return self._customer_cache[user]
+            raise DripError(
+                f"Customer with external ID '{user}' exists but could not be resolved"
+            )
+
+    # =========================================================================
     # Customer Management
     # =========================================================================
+
+    async def get_or_create_customer(
+        self,
+        external_customer_id: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> Customer:
+        """Get or create a customer by external ID. Never errors on duplicate."""
+        try:
+            customer = await self.create_customer(
+                external_customer_id=external_customer_id,
+                metadata=metadata,
+            )
+            async with self._cache_lock:
+                self._customer_cache[external_customer_id] = customer.id
+            return customer
+        except DripAPIError as e:
+            if e.status_code != 409:
+                raise
+            # Already exists — resolve and fetch
+            customer_id = await self._resolve_customer(external_customer_id)
+            return await self.get_customer(customer_id)
 
     async def create_customer(
         self,
@@ -2122,9 +3008,12 @@ class AsyncDrip:
         self,
         status: CustomerStatus | None = None,
         limit: int = 100,
+        offset: int = 0,
     ) -> ListCustomersResponse:
         """List customers with optional filtering."""
         params: dict[str, Any] = {"limit": limit}
+        if offset:
+            params["offset"] = offset
         if status:
             params["status"] = status.value
 
@@ -2137,26 +3026,110 @@ class AsyncDrip:
         return BalanceResult.model_validate(response)
 
     # =========================================================================
+    # Customer Spending Caps
+    # =========================================================================
+
+    async def set_customer_spending_cap(
+        self,
+        customer_id: str,
+        cap_type: SpendingCapType,
+        limit_value: float,
+        auto_block: bool = True,
+    ) -> CustomerSpendingCap:
+        """
+        Set or update a per-customer spending cap.
+
+        Args:
+            customer_id: The customer ID.
+            cap_type: Type of cap (DAILY_CHARGE_LIMIT, MONTHLY_CHARGE_LIMIT, SINGLE_CHARGE_LIMIT).
+            limit_value: Spending limit in USDC.
+            auto_block: Auto-block charges when cap is reached (default: True).
+
+        Returns:
+            The created or updated spending cap.
+
+        Example::
+
+            cap = await drip.set_customer_spending_cap(
+                "cust_abc123",
+                SpendingCapType.DAILY_CHARGE_LIMIT,
+                100.0,
+            )
+        """
+        body: dict[str, Any] = {
+            "capType": cap_type.value,
+            "limitValue": limit_value,
+            "autoBlock": auto_block,
+        }
+        response = await self._put(f"/customers/{customer_id}/spending-cap", json=body)
+        return CustomerSpendingCap.model_validate(response)
+
+    async def get_customer_spending_caps(
+        self,
+        customer_id: str,
+    ) -> ListSpendingCapsResponse:
+        """
+        List active spending caps for a customer.
+
+        Args:
+            customer_id: The customer ID.
+
+        Returns:
+            List of active spending caps.
+        """
+        response = await self._get(f"/customers/{customer_id}/spending-caps")
+        return ListSpendingCapsResponse.model_validate(response)
+
+    async def remove_customer_spending_cap(
+        self,
+        customer_id: str,
+        cap_id: str,
+    ) -> None:
+        """
+        Remove (deactivate) a spending cap.
+
+        Args:
+            customer_id: The customer ID.
+            cap_id: The spending cap ID to remove.
+        """
+        await self._delete(f"/customers/{customer_id}/spending-caps/{cap_id}")
+
+    # =========================================================================
     # Charging & Usage
     # =========================================================================
 
     async def charge(
         self,
-        customer_id: str,
-        meter: str,
-        quantity: float,
+        customer_id: str | None = None,
+        meter: str = "",
+        quantity: float = 0,
         idempotency_key: str | None = None,
         metadata: dict[str, Any] | None = None,
+        *,
+        user: str | None = None,
     ) -> ChargeResult:
-        """Create a charge for usage."""
+        """
+        Charge a customer for usage.
+
+        Pass ``user`` (your user ID) to auto-create and resolve the customer,
+        or ``customer_id`` if you already have the Drip ID.
+
+        Example::
+
+            await drip.charge(user="user_123", meter="api_calls", quantity=1)
+        """
+        resolved_id = (await self._resolve_customer(user)) if user else customer_id
+        if not resolved_id:
+            raise DripError("Either 'customer_id' or 'user' is required")
+
         body: dict[str, Any] = {
-            "customerId": customer_id,
+            "customerId": resolved_id,
             "usageType": meter,
             "quantity": quantity,
         }
 
         body["idempotencyKey"] = idempotency_key or _deterministic_idempotency_key(
-            "chg", customer_id, meter, quantity
+            "chg", resolved_id, meter, quantity
         )
         if metadata:
             body["metadata"] = metadata
@@ -2174,9 +3147,12 @@ class AsyncDrip:
         customer_id: str | None = None,
         status: str | None = None,
         limit: int = 100,
+        offset: int = 0,
     ) -> ListChargesResponse:
         """List charges with optional filtering."""
         params: dict[str, Any] = {"limit": limit}
+        if offset:
+            params["offset"] = offset
         if customer_id:
             params["customerId"] = customer_id
         if status:
@@ -2185,39 +3161,36 @@ class AsyncDrip:
         response = await self._get("/charges", params=params)
         return ListChargesResponse.model_validate(response)
 
-    async def get_charge_status(self, charge_id: str) -> ChargeStatusResult:
-        """Quick status check for a charge."""
-        response = await self._get(f"/charges/{charge_id}/status")
-        return ChargeStatusResult.model_validate(response)
-
     async def track_usage(
         self,
-        customer_id: str,
-        meter: str,
-        quantity: float,
+        customer_id: str | None = None,
+        meter: str = "",
+        quantity: float = 0,
         idempotency_key: str | None = None,
         units: str | None = None,
         description: str | None = None,
         metadata: dict[str, Any] | None = None,
+        *,
+        user: str | None = None,
     ) -> TrackUsageResult:
         """
         Record usage for internal visibility WITHOUT billing.
 
-        Use this for:
-        - Tracking internal team usage without charging
-        - Pilot programs where you want visibility before billing
-        - Pre-billing tracking before customer wallet setup
-
-        For billing, use `charge()` instead.
+        Pass ``user`` (your user ID) or ``customer_id``.
+        For billing, use ``charge()`` instead.
         """
+        resolved_id = (await self._resolve_customer(user)) if user else customer_id
+        if not resolved_id:
+            raise DripError("Either 'customer_id' or 'user' is required")
+
         body: dict[str, Any] = {
-            "customerId": customer_id,
+            "customerId": resolved_id,
             "usageType": meter,
             "quantity": quantity,
         }
 
         body["idempotencyKey"] = idempotency_key or _deterministic_idempotency_key(
-            "track", customer_id, meter, quantity
+            "track", resolved_id, meter, quantity
         )
         if units:
             body["units"] = units
@@ -2229,69 +3202,104 @@ class AsyncDrip:
         response = await self._post("/usage/internal", json=body)
         return TrackUsageResult.model_validate(response)
 
+    async def charge_async(
+        self,
+        customer_id: str | None = None,
+        meter: str = "",
+        quantity: float = 0,
+        idempotency_key: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        *,
+        user: str | None = None,
+    ) -> ChargeAsyncResult:
+        """
+        Charge a customer asynchronously — returns immediately.
+
+        The charge is queued for background processing. Subscribe to
+        ``charge.succeeded`` / ``charge.failed`` webhooks for final status.
+        """
+        resolved_id = (await self._resolve_customer(user)) if user else customer_id
+        if not resolved_id:
+            raise DripError("Either 'customer_id' or 'user' is required")
+
+        body: dict[str, Any] = {
+            "customerId": resolved_id,
+            "usageType": meter,
+            "quantity": quantity,
+        }
+
+        body["idempotencyKey"] = idempotency_key or _deterministic_idempotency_key(
+            "chg-async", resolved_id, meter, quantity
+        )
+        if metadata:
+            body["metadata"] = metadata
+
+        response = await self._post("/usage/async", json=body)
+        return ChargeAsyncResult.model_validate(response)
+
+    async def list_events(
+        self,
+        customer_id: str | None = None,
+        run_id: str | None = None,
+        event_type: str | None = None,
+        outcome: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> ListEventsResponse:
+        """List execution events with optional filters."""
+        params: dict[str, Any] = {"limit": limit, "offset": offset}
+        if customer_id:
+            params["customerId"] = customer_id
+        if run_id:
+            params["runId"] = run_id
+        if event_type:
+            params["eventType"] = event_type
+        if outcome:
+            params["outcome"] = outcome
+
+        response = await self._get("/events", params=params)
+        return ListEventsResponse.model_validate(response)
+
+    async def get_event(self, event_id: str) -> ExecutionEvent:
+        """Get a single execution event."""
+        response = await self._get(f"/events/{event_id}")
+        return ExecutionEvent.model_validate(response)
+
+    async def get_event_trace(self, event_id: str) -> EventTrace:
+        """Get the causality trace for an event."""
+        response = await self._get(f"/events/{event_id}/trace")
+        return EventTrace.model_validate(response)
+
     async def wrap_api_call(
         self,
-        customer_id: str,
-        meter: str,
-        call: Callable[[], Any],
-        extract_usage: Callable[[Any], float],
+        customer_id: str | None = None,
+        meter: str = "",
+        call: Callable[[], Any] = None,  # type: ignore[assignment]
+        extract_usage: Callable[[Any], float] = None,  # type: ignore[assignment]
         idempotency_key: str | None = None,
         metadata: dict[str, Any] | None = None,
         retry_options: RetryOptions | None = None,
+        *,
+        user: str | None = None,
     ) -> WrapApiCallResult:
         """
         Wraps an external async API call with guaranteed usage recording.
 
-        This solves the crash-before-record problem:
+        Pass ``user`` (your user ID) or ``customer_id``.
 
-        DANGEROUS - usage lost if crash between lines 1 and 2:
-        >>> response = await openai.chat.completions.create(...)  # line 1
-        >>> await client.charge(customer_id, "tokens", response.usage.total_tokens)  # line 2
+        Example::
 
-        SAFE - wrap_api_call guarantees recording with retry:
-        >>> result = await client.wrap_api_call(
-        ...     customer_id="cust_123",
-        ...     meter="tokens",
-        ...     call=lambda: openai.chat.completions.create(...),
-        ...     extract_usage=lambda r: r.usage.total_tokens,
-        ... )
-
-        How it works:
-        1. Generates idempotency key BEFORE the API call
-        2. Makes the external API call (once, no retry)
-        3. Records usage in Drip with retry + idempotency
-        4. If recording fails transiently, retries are safe (no double-charge)
-
-        Args:
-            customer_id: The Drip customer ID to charge.
-            meter: The usage meter/type to record against.
-            call: The async function that makes the external API call.
-            extract_usage: Function to extract usage quantity from the API result.
-            idempotency_key: Custom idempotency key prefix (auto-generated if not provided).
-            metadata: Optional metadata to attach to the charge.
-            retry_options: Custom retry options for the charge call.
-
-        Returns:
-            WrapApiCallResult containing the API result, charge result, and idempotency key.
-
-        Raises:
-            DripAPIError: If the Drip charge fails after retries.
-            Exception: If the external API call fails (no retry).
-
-        Example:
-            >>> async with AsyncDrip(api_key="...") as client:
-            ...     result = await client.wrap_api_call(
-            ...         customer_id="cust_abc123",
-            ...         meter="tokens",
-            ...         call=lambda: openai.chat.completions.create(
-            ...             model="gpt-4",
-            ...             messages=[{"role": "user", "content": "Hello!"}],
-            ...         ),
-            ...         extract_usage=lambda r: r.usage.total_tokens if r.usage else 0,
-            ...     )
-            ...     print(result.result.choices[0].message.content)
-            ...     print(f"Charged: {result.charge.charge.amount_usdc} USDC")
+            result = await drip.wrap_api_call(
+                user="user_123",
+                meter="tokens",
+                call=lambda: openai.chat.completions.create(...),
+                extract_usage=lambda r: r.usage.total_tokens,
+            )
         """
+        resolved_id = (await self._resolve_customer(user)) if user else customer_id
+        if not resolved_id:
+            raise DripError("Either 'customer_id' or 'user' is required")
+
         # Generate idempotency key BEFORE the call
         key = idempotency_key or f"wrap_{int(time.time() * 1000)}_{random.randbytes(8).hex()[:9]}"
 
@@ -2309,7 +3317,7 @@ class AsyncDrip:
         # Step 3: Record usage in Drip with retry (idempotency makes this safe)
         charge = await _retry_with_backoff_async(
             lambda: self.charge(
-                customer_id=customer_id,
+                customer_id=resolved_id,
                 meter=meter,
                 quantity=quantity,
                 idempotency_key=key,
@@ -2384,7 +3392,7 @@ class AsyncDrip:
         if custom_pricing is not None:
             body["customPricing"] = custom_pricing
 
-        response = await self._post("/dashboard/cost-estimate/from-usage", json=body)
+        response = await self._post("/cost-estimate/from-usage", json=body)
         return CostEstimateResponse.model_validate(response)
 
     async def estimate_from_hypothetical(
@@ -2435,7 +3443,7 @@ class AsyncDrip:
         if custom_pricing is not None:
             body["customPricing"] = custom_pricing
 
-        response = await self._post("/dashboard/cost-estimate/hypothetical", json=body)
+        response = await self._post("/cost-estimate/hypothetical", json=body)
         return CostEstimateResponse.model_validate(response)
 
     # =========================================================================
@@ -2454,15 +3462,15 @@ class AsyncDrip:
         """Create a checkout session."""
         body: dict[str, Any] = {
             "amount": amount,
-            "returnUrl": return_url,
+            "return_url": return_url,
         }
 
         if customer_id:
-            body["customerId"] = customer_id
+            body["customer_id"] = customer_id
         if external_customer_id:
-            body["externalCustomerId"] = external_customer_id
+            body["external_customer_id"] = external_customer_id
         if cancel_url:
-            body["cancelUrl"] = cancel_url
+            body["cancel_url"] = cancel_url
         if metadata:
             body["metadata"] = metadata
 
@@ -2478,8 +3486,10 @@ class AsyncDrip:
         url: str,
         events: list[str],
         description: str | None = None,
+        filters: "WebhookFilters | None" = None,
     ) -> CreateWebhookResponse:
         """Create a webhook endpoint."""
+        self._assert_secret_key("create_webhook")
         body: dict[str, Any] = {
             "url": url,
             "events": events,
@@ -2488,26 +3498,60 @@ class AsyncDrip:
         if description:
             body["description"] = description
 
+        if filters:
+            body["filters"] = filters.model_dump(by_alias=True, exclude_none=True)
+
         response = await self._post("/webhooks", json=body)
         return CreateWebhookResponse.model_validate(response)
 
+    async def update_webhook(
+        self,
+        webhook_id: str,
+        url: str | None = _UNSET,
+        events: list[str] | None = _UNSET,
+        description: str | None = _UNSET,
+        is_active: bool | None = _UNSET,
+        filters: "WebhookFilters | None" = _UNSET,
+    ) -> Webhook:
+        """Update a webhook endpoint."""
+        self._assert_secret_key("update_webhook")
+        body: dict[str, Any] = {}
+
+        if url is not _UNSET:
+            body["url"] = url
+        if events is not _UNSET:
+            body["events"] = events
+        if description is not _UNSET:
+            body["description"] = description
+        if is_active is not _UNSET:
+            body["isActive"] = is_active
+        if filters is not _UNSET:
+            body["filters"] = filters.model_dump(by_alias=True, exclude_none=True) if filters else None
+
+        response = await self._patch(f"/webhooks/{webhook_id}", json=body)
+        return Webhook.model_validate(response)
+
     async def list_webhooks(self) -> ListWebhooksResponse:
         """List all webhooks."""
+        self._assert_secret_key("list_webhooks")
         response = await self._get("/webhooks")
         return ListWebhooksResponse.model_validate(response)
 
     async def get_webhook(self, webhook_id: str) -> Webhook:
         """Get a specific webhook."""
+        self._assert_secret_key("get_webhook")
         response = await self._get(f"/webhooks/{webhook_id}")
         return Webhook.model_validate(response)
 
     async def delete_webhook(self, webhook_id: str) -> DeleteWebhookResponse:
         """Delete a webhook."""
+        self._assert_secret_key("delete_webhook")
         response = await self._delete(f"/webhooks/{webhook_id}")
         return DeleteWebhookResponse.model_validate(response)
 
     async def test_webhook(self, webhook_id: str) -> TestWebhookResponse:
         """Send a test event to a webhook."""
+        self._assert_secret_key("test_webhook")
         response = await self._post(f"/webhooks/{webhook_id}/test")
         return TestWebhookResponse.model_validate(response)
 
@@ -2515,8 +3559,142 @@ class AsyncDrip:
         self, webhook_id: str
     ) -> RotateWebhookSecretResponse:
         """Generate a new webhook secret."""
+        self._assert_secret_key("rotate_webhook_secret")
         response = await self._post(f"/webhooks/{webhook_id}/rotate-secret")
         return RotateWebhookSecretResponse.model_validate(response)
+
+    # =========================================================================
+    # Subscriptions
+    # =========================================================================
+
+    async def create_subscription(
+        self,
+        customer_id: str,
+        name: str,
+        interval: str,
+        price_usdc: float,
+        description: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        trial_days: int | None = None,
+        included_usage: int | None = None,
+        overage_unit_type: str | None = None,
+    ) -> "Subscription":
+        """Create a recurring billing subscription."""
+        from .models import Subscription as SubscriptionModel
+
+        body: dict[str, Any] = {
+            "customerId": customer_id,
+            "name": name,
+            "interval": interval,
+            "priceUsdc": price_usdc,
+        }
+        if description is not None:
+            body["description"] = description
+        if metadata is not None:
+            body["metadata"] = metadata
+        if trial_days is not None:
+            body["trialDays"] = trial_days
+        if included_usage is not None:
+            body["includedUsage"] = included_usage
+        if overage_unit_type is not None:
+            body["overageUnitType"] = overage_unit_type
+
+        response = await self._post("/subscriptions", json=body)
+        return SubscriptionModel.model_validate(response)
+
+    async def get_subscription(self, subscription_id: str) -> "Subscription":
+        """Get a subscription by ID."""
+        from .models import Subscription as SubscriptionModel
+
+        response = await self._get(f"/subscriptions/{subscription_id}")
+        return SubscriptionModel.model_validate(response)
+
+    async def list_subscriptions(
+        self,
+        customer_id: str | None = None,
+        status: str | None = None,
+        limit: int = 100,
+    ) -> "ListSubscriptionsResponse":
+        """List subscriptions with optional filtering."""
+        from .models import ListSubscriptionsResponse as ListSubsResponse
+
+        params: dict[str, Any] = {"limit": limit}
+        if customer_id:
+            params["customerId"] = customer_id
+        if status:
+            params["status"] = status
+
+        response = await self._get("/subscriptions", params=params)
+        return ListSubsResponse.model_validate(response)
+
+    async def update_subscription(
+        self,
+        subscription_id: str,
+        name: str | None = None,
+        description: str | None = _UNSET,
+        price_usdc: float | None = None,
+        metadata: dict[str, Any] | None = _UNSET,
+        included_usage: int | None = _UNSET,
+        overage_unit_type: str | None = _UNSET,
+    ) -> "Subscription":
+        """Update a subscription. Price changes take effect at next period."""
+        from .models import Subscription as SubscriptionModel
+
+        body: dict[str, Any] = {}
+        if name is not None:
+            body["name"] = name
+        if description is not _UNSET:
+            body["description"] = description
+        if price_usdc is not None:
+            body["priceUsdc"] = price_usdc
+        if metadata is not _UNSET:
+            body["metadata"] = metadata
+        if included_usage is not _UNSET:
+            body["includedUsage"] = included_usage
+        if overage_unit_type is not _UNSET:
+            body["overageUnitType"] = overage_unit_type
+
+        response = await self._patch(f"/subscriptions/{subscription_id}", json=body)
+        return SubscriptionModel.model_validate(response)
+
+    async def cancel_subscription(
+        self,
+        subscription_id: str,
+        immediate: bool = False,
+    ) -> "Subscription":
+        """Cancel a subscription. Default: cancel at end of current period."""
+        from .models import Subscription as SubscriptionModel
+
+        response = await self._post(
+            f"/subscriptions/{subscription_id}/cancel",
+            json={"immediate": immediate},
+        )
+        return SubscriptionModel.model_validate(response)
+
+    async def pause_subscription(
+        self,
+        subscription_id: str,
+        resume_date: str | None = None,
+    ) -> "Subscription":
+        """Pause an active subscription."""
+        from .models import Subscription as SubscriptionModel
+
+        body: dict[str, Any] = {}
+        if resume_date is not None:
+            body["resumeDate"] = resume_date
+
+        response = await self._post(
+            f"/subscriptions/{subscription_id}/pause",
+            json=body,
+        )
+        return SubscriptionModel.model_validate(response)
+
+    async def resume_subscription(self, subscription_id: str) -> "Subscription":
+        """Resume a paused subscription."""
+        from .models import Subscription as SubscriptionModel
+
+        response = await self._post(f"/subscriptions/{subscription_id}/resume")
+        return SubscriptionModel.model_validate(response)
 
     # =========================================================================
     # Workflows
@@ -2654,12 +3832,41 @@ class AsyncDrip:
         events: list[dict[str, Any]],
     ) -> EmitEventsBatchResult:
         """Emit multiple events in one request."""
-        response = await self._post("/run-events/batch", json={"events": events})
+        import uuid as _uuid
+        normalized = [
+            {**evt, "idempotencyKey": evt.get("idempotencyKey") or str(_uuid.uuid4())}
+            for evt in events
+        ]
+        response = await self._post("/run-events/batch", json={"events": normalized})
         return EmitEventsBatchResult.model_validate(response)
 
-    async def get_run_timeline(self, run_id: str) -> RunTimeline:
-        """Get the full timeline for a run."""
-        data = await self._get(f"/runs/{run_id}/timeline")
+    async def get_run(self, run_id: str) -> "RunDetails":
+        """Get run details and summary totals."""
+        from .models import RunDetails
+
+        response = await self._get(f"/runs/{run_id}")
+        return RunDetails.model_validate(response)
+
+    async def get_run_timeline(
+        self,
+        run_id: str,
+        *,
+        limit: int | None = None,
+        cursor: str | None = None,
+        include_anomalies: bool | None = None,
+        collapse_retries: bool | None = None,
+    ) -> RunTimeline:
+        """Get the full timeline for a run with optional filtering."""
+        params: dict[str, str] = {}
+        if limit is not None:
+            params["limit"] = str(limit)
+        if cursor is not None:
+            params["cursor"] = cursor
+        if include_anomalies is not None:
+            params["includeAnomalies"] = str(include_anomalies).lower()
+        if collapse_retries is not None:
+            params["collapseRetries"] = str(collapse_retries).lower()
+        data = await self._get(f"/runs/{run_id}/timeline", params=params)
 
         run = TimelineRunInfo(
             id=data.get("runId", run_id),
@@ -2867,6 +4074,70 @@ class AsyncDrip:
         })
 
     # =========================================================================
+    # Run Context Manager
+    # =========================================================================
+
+    @asynccontextmanager
+    async def run(
+        self,
+        workflow: str,
+        customer_id: str | None = None,
+        *,
+        user: str | None = None,
+        external_run_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ):
+        """
+        Async context manager for agent runs. Auto-starts, auto-completes, auto-fails.
+
+        Example::
+
+            async with drip.run(user="user_123", workflow="my-agent") as run:
+                result = await do_work()
+                await run.charge("api_calls", 1)
+                await run.event("compute_seconds", 2.5)
+            # auto-completes here, or auto-fails on exception
+        """
+        resolved_id = (await self._resolve_customer(user)) if user else customer_id
+        if not resolved_id:
+            raise DripError("Either 'customer_id' or 'user' is required")
+
+        # Resolve workflow to ID
+        workflows_resp = await self.list_workflows()
+        match = next(
+            (w for w in workflows_resp.data if w.slug == workflow or w.id == workflow),
+            None,
+        )
+        if match:
+            workflow_id = match.id
+        else:
+            pretty = workflow.replace("_", " ").replace("-", " ").title()
+            created = await self._post("/workflows", json={
+                "name": pretty, "slug": workflow, "productSurface": "CUSTOM",
+            })
+            workflow_id = created["id"]
+
+        run_result = await self.start_run(
+            customer_id=resolved_id,
+            workflow_id=workflow_id,
+            external_run_id=external_run_id,
+            metadata=metadata,
+        )
+
+        ctx = _AsyncRunContext(client=self, run_id=run_result.id, customer_id=resolved_id)
+        try:
+            yield ctx
+            await self.end_run(run_result.id, status="COMPLETED")
+        except Exception as exc:
+            await self.end_run(
+                run_result.id,
+                status="FAILED",
+                error_message=str(exc),
+                error_code=type(exc).__name__,
+            )
+            raise
+
+    # =========================================================================
     # Meters
     # =========================================================================
 
@@ -2968,3 +4239,38 @@ class AsyncDrip:
             on_flush=on_flush,
         )
         return StreamMeter(_charge_fn=self.charge, _options=options)
+
+    # =========================================================================
+    # Entitlement Methods
+    # =========================================================================
+
+    async def check_entitlement(
+        self,
+        customer_id: str,
+        feature_key: str,
+        quantity: float = 1,
+    ) -> "EntitlementCheckResult":
+        """
+        Check if a customer is entitled to use a feature.
+
+        Use this before processing expensive requests to avoid wasting compute
+        on customers who are over their quota.
+
+        Args:
+            customer_id: The Drip customer ID.
+            feature_key: Feature key to check (e.g., "search", "api_calls", "tokens").
+            quantity: Quantity to check against the limit (default: 1).
+
+        Returns:
+            EntitlementCheckResult with allowed, remaining, limit, and period info.
+        """
+        from .models import EntitlementCheckResult
+
+        body: dict[str, Any] = {
+            "customerId": customer_id,
+            "featureKey": feature_key,
+            "quantity": quantity,
+        }
+
+        response = await self._post("/entitlements/check", json=body)
+        return EntitlementCheckResult.model_validate(response)

@@ -7,9 +7,9 @@ where you want to avoid making an API call for every small increment.
 Example:
     >>> from drip import Drip
     >>>
-    >>> client = Drip(api_key="drip_sk_...")
+    >>> client = Drip(api_key="sk_test_...")
     >>> meter = client.create_stream_meter(
-    ...     customer_id="cust_abc123",
+    ...     customer_id=customer.id,
     ...     meter="tokens",
     ... )
     >>>
@@ -20,9 +20,9 @@ Example:
     >>> print(f"Charged {result.charge.amount_usdc} for {result.quantity} tokens")
 
 Async Example:
-    >>> async with AsyncDrip(api_key="drip_sk_...") as client:
+    >>> async with AsyncDrip(api_key="sk_test_...") as client:
     ...     meter = client.create_stream_meter(
-    ...         customer_id="cust_abc123",
+    ...         customer_id=customer.id,
     ...         meter="tokens",
     ...     )
     ...

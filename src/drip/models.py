@@ -70,6 +70,9 @@ class WebhookEventType(str, Enum):
     CUSTOMER_WITHDRAW_CONFIRMED = "customer.withdraw.confirmed"
     CUSTOMER_USAGE_CAP_REACHED = "customer.usage_cap.reached"
     WEBHOOK_ENDPOINT_UNHEALTHY = "webhook.endpoint.unhealthy"
+    CUSTOMER_SPENDING_WARNING = "customer.spending.warning"
+    CUSTOMER_SPENDING_BLOCKED = "customer.spending.blocked"
+    CUSTOMER_SPENDING_EXCEEDED = "customer.spending.exceeded"
     CUSTOMER_CREATED = "customer.created"
     API_KEY_CREATED = "api_key.created"
     PRICING_PLAN_UPDATED = "pricing_plan.updated"
@@ -77,6 +80,13 @@ class WebhookEventType(str, Enum):
     TRANSACTION_PENDING = "transaction.pending"
     TRANSACTION_CONFIRMED = "transaction.confirmed"
     TRANSACTION_FAILED = "transaction.failed"
+    SUBSCRIPTION_CREATED = "subscription.created"
+    SUBSCRIPTION_RENEWED = "subscription.renewed"
+    SUBSCRIPTION_CANCELLED = "subscription.cancelled"
+    SUBSCRIPTION_PAUSED = "subscription.paused"
+    SUBSCRIPTION_RESUMED = "subscription.resumed"
+    SUBSCRIPTION_TRIAL_ENDED = "subscription.trial_ended"
+    SUBSCRIPTION_PAYMENT_FAILED = "subscription.payment_failed"
 
 
 # =============================================================================
@@ -91,7 +101,7 @@ class DripConfig(BaseModel):
 
     api_key: str = Field(..., description="API key from Drip dashboard")
     base_url: str = Field(
-        default="https://drip-app-hlunj.ondigitalocean.app/v1", description="Base URL for the Drip API"
+        default="https://api.drippay.dev/v1", description="Base URL for the Drip API"
     )
     timeout: float = Field(default=30.0, description="Request timeout in seconds")
 
@@ -142,6 +152,7 @@ class ListCustomersOptions(BaseModel):
 
     status: CustomerStatus | None = None
     limit: int = Field(default=100, ge=1, le=100)
+    offset: int = Field(default=0, ge=0)
 
 
 class ListCustomersResponse(BaseModel):
@@ -162,6 +173,40 @@ class BalanceResult(BaseModel):
     last_synced_at: str | None = Field(alias="lastSyncedAt")
 
     model_config = ConfigDict(populate_by_name=True)
+
+
+# =============================================================================
+# Spending Cap Models
+# =============================================================================
+
+
+class SpendingCapType(str, Enum):
+    """Type of spending cap."""
+
+    DAILY_CHARGE_LIMIT = "DAILY_CHARGE_LIMIT"
+    MONTHLY_CHARGE_LIMIT = "MONTHLY_CHARGE_LIMIT"
+    SINGLE_CHARGE_LIMIT = "SINGLE_CHARGE_LIMIT"
+
+
+class CustomerSpendingCap(BaseModel):
+    """A per-customer spending cap with current usage tracking."""
+
+    id: str
+    cap_type: str = Field(alias="capType")
+    limit_value: str = Field(alias="limitValue")
+    current_usage: str = Field(alias="currentUsage")
+    period_start: str = Field(alias="periodStart")
+    is_active: bool = Field(alias="isActive")
+    auto_block: bool = Field(alias="autoBlock")
+    last_alert_level: str | None = Field(default=None, alias="lastAlertLevel")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class ListSpendingCapsResponse(BaseModel):
+    """Response from listing spending caps."""
+
+    caps: list[CustomerSpendingCap]
 
 
 # =============================================================================
@@ -265,6 +310,7 @@ class ListChargesOptions(BaseModel):
     customer_id: str | None = Field(default=None, alias="customerId")
     status: ChargeStatus | None = None
     limit: int = Field(default=100, ge=1, le=100)
+    offset: int = Field(default=0, ge=0)
 
 
 class ListChargesResponse(BaseModel):
@@ -274,16 +320,6 @@ class ListChargesResponse(BaseModel):
     count: int
 
 
-class ChargeStatusResult(BaseModel):
-    """Quick charge status check result."""
-
-    id: str
-    status: ChargeStatus
-    tx_hash: str | None = Field(default=None, alias="txHash")
-    confirmed_at: str | None = Field(default=None, alias="confirmedAt")
-    failure_reason: str | None = Field(default=None, alias="failureReason")
-
-    model_config = ConfigDict(populate_by_name=True)
 
 
 # =============================================================================
@@ -320,12 +356,37 @@ class CheckoutResult(BaseModel):
 # =============================================================================
 
 
+class WebhookFilters(BaseModel):
+    """Per-endpoint routing filters for webhooks.
+    All specified criteria use AND logic — events must match ALL filters.
+    """
+
+    usage_types: list[str] | None = Field(default=None, alias="usageTypes")
+    customer_ids: list[str] | None = Field(default=None, alias="customerIds")
+    severities: list[str] | None = None
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
 class CreateWebhookParams(BaseModel):
     """Parameters for creating a webhook."""
 
     url: str = Field(..., description="HTTPS endpoint")
     events: list[WebhookEventType]
     description: str | None = None
+    filters: WebhookFilters | None = None
+
+
+class UpdateWebhookParams(BaseModel):
+    """Parameters for updating a webhook."""
+
+    url: str | None = None
+    events: list[WebhookEventType] | None = None
+    description: str | None = None
+    is_active: bool | None = Field(default=None, alias="isActive")
+    filters: WebhookFilters | None = None
+
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class WebhookStats(BaseModel):
@@ -346,6 +407,7 @@ class Webhook(BaseModel):
     url: str
     events: list[str]
     description: str | None = None
+    filters: WebhookFilters | None = None
     is_active: bool = Field(alias="isActive")
     health_status: str = Field(default="HEALTHY", alias="healthStatus")
     consecutive_failures: int = Field(default=0, alias="consecutiveFailures")
@@ -374,8 +436,8 @@ class ListWebhooksResponse(BaseModel):
 class DeleteWebhookResponse(BaseModel):
     """Response from deleting a webhook."""
 
+    success: bool = Field(default=True)
     message: str | None = Field(default=None)
-    deleted: bool = Field(default=True)
 
 
 class TestWebhookResponse(BaseModel):
@@ -458,6 +520,44 @@ class RunResult(BaseModel):
     status: RunStatus
     correlation_id: str | None = Field(alias="correlationId")
     created_at: str = Field(alias="createdAt")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class RunDetailsTotals(BaseModel):
+    """Aggregate totals for a run."""
+
+    event_count: int = Field(alias="eventCount")
+    total_quantity: str = Field(alias="totalQuantity")
+    total_cost_units: str = Field(alias="totalCostUnits")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class RunDetailsLinks(BaseModel):
+    """HATEOAS links for a run."""
+
+    timeline: str
+
+
+class RunDetails(BaseModel):
+    """Detailed run information from GET /runs/:id."""
+
+    id: str
+    customer_id: str = Field(alias="customerId")
+    customer_name: str | None = Field(default=None, alias="customerName")
+    workflow_id: str = Field(alias="workflowId")
+    workflow_name: str = Field(alias="workflowName")
+    status: RunStatus
+    started_at: str | None = Field(default=None, alias="startedAt")
+    ended_at: str | None = Field(default=None, alias="endedAt")
+    duration_ms: int | None = Field(default=None, alias="durationMs")
+    error_message: str | None = Field(default=None, alias="errorMessage")
+    error_code: str | None = Field(default=None, alias="errorCode")
+    correlation_id: str | None = Field(default=None, alias="correlationId")
+    metadata: dict[str, Any] | None = None
+    totals: RunDetailsTotals
+    links: RunDetailsLinks = Field(alias="_links")
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -841,5 +941,157 @@ class CostEstimateResponse(BaseModel):
         default=True, alias="isEstimate", description="Indicates this is an estimate"
     )
     generated_at: str = Field(alias="generatedAt", description="When the estimate was generated")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+# =============================================================================
+# Subscription Models
+# =============================================================================
+
+
+class SubscriptionStatus(str, Enum):
+    """Status of a subscription."""
+
+    ACTIVE = "ACTIVE"
+    PAUSED = "PAUSED"
+    CANCELLED = "CANCELLED"
+    EXPIRED = "EXPIRED"
+    PAST_DUE = "PAST_DUE"
+    TRIALING = "TRIALING"
+
+
+class SubscriptionInterval(str, Enum):
+    """Billing interval for a subscription."""
+
+    DAILY = "DAILY"
+    WEEKLY = "WEEKLY"
+    MONTHLY = "MONTHLY"
+    ANNUAL = "ANNUAL"
+
+
+class Subscription(BaseModel):
+    """Subscription record."""
+
+    id: str
+    business_id: str = Field(alias="businessId")
+    customer_id: str = Field(alias="customerId")
+    name: str
+    description: str | None = None
+    interval: SubscriptionInterval
+    price_usdc: str = Field(alias="priceUsdc")
+    status: SubscriptionStatus
+    current_period_start: str = Field(alias="currentPeriodStart")
+    current_period_end: str = Field(alias="currentPeriodEnd")
+    cancelled_at: str | None = Field(default=None, alias="cancelledAt")
+    cancel_at_period_end: bool = Field(alias="cancelAtPeriodEnd")
+    paused_at: str | None = Field(default=None, alias="pausedAt")
+    resumes_at: str | None = Field(default=None, alias="resumesAt")
+    trial_start: str | None = Field(default=None, alias="trialStart")
+    trial_end: str | None = Field(default=None, alias="trialEnd")
+    included_usage: int | None = Field(default=None, alias="includedUsage")
+    overage_unit_type: str | None = Field(default=None, alias="overageUnitType")
+    metadata: dict[str, Any] | None = None
+    created_at: str = Field(alias="createdAt")
+    updated_at: str = Field(alias="updatedAt")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class CreateSubscriptionParams(BaseModel):
+    """Parameters for creating a subscription."""
+
+    customer_id: str = Field(alias="customerId", description="The customer to subscribe")
+    name: str = Field(..., description="Human-readable subscription name")
+    price_usdc: float = Field(alias="priceUsdc", description="Price per period in USDC")
+    interval: SubscriptionInterval = Field(..., description="Billing interval")
+    description: str | None = Field(default=None, description="Optional description")
+    metadata: dict[str, Any] | None = Field(default=None, description="Custom metadata")
+    trial_days: int | None = Field(default=None, alias="trialDays", description="Trial period in days")
+    included_usage: int | None = Field(default=None, alias="includedUsage", description="Included usage units per period")
+    overage_unit_type: str | None = Field(default=None, alias="overageUnitType", description="Usage type for overage metering")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class ListSubscriptionsOptions(BaseModel):
+    """Options for listing subscriptions."""
+
+    customer_id: str | None = Field(default=None, alias="customerId")
+    status: SubscriptionStatus | None = None
+
+
+class ListSubscriptionsResponse(BaseModel):
+    """Response from listing subscriptions."""
+
+    data: list[Subscription]
+    count: int
+
+
+# =============================================================================
+# Entitlement Models
+# =============================================================================
+
+
+class ChargeAsyncResult(BaseModel):
+    """Result of an async charge operation (returns 202 immediately)."""
+
+    success: bool
+    usage_event_id: str = Field(alias="usageEventId")
+    is_duplicate: bool = Field(alias="isDuplicate")
+    charge: ChargeInfo
+    message: str
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class ExecutionEvent(BaseModel):
+    """An execution event record."""
+
+    id: str
+    customer_id: str = Field(alias="customerId")
+    run_id: str | None = Field(default=None, alias="runId")
+    event_type: str = Field(alias="eventType")
+    outcome: str
+    explanation: str | None = None
+    created_at: str = Field(alias="createdAt")
+    metadata: dict[str, Any] | None = None
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class ListEventsResponse(BaseModel):
+    """Paginated list of events."""
+
+    data: list[ExecutionEvent]
+    total: int
+    limit: int
+    offset: int
+
+
+class EventTrace(BaseModel):
+    """Causality trace for an event."""
+
+    event_id: str = Field(alias="eventId")
+    ancestors: list[ExecutionEvent]
+    children: list[ExecutionEvent]
+    retry_chain: list[ExecutionEvent] = Field(alias="retryChain")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class EntitlementCheckResult(BaseModel):
+    """Result of an entitlement check."""
+
+    allowed: bool = Field(description="Whether the customer is allowed to use this feature")
+    feature_key: str = Field(alias="featureKey", description="The feature that was checked")
+    remaining: float = Field(description="Remaining quota in the current period (-1 if unlimited)")
+    limit: float = Field(description="The limit for this period (-1 if unlimited)")
+    unlimited: bool = Field(description="Whether the customer has unlimited access")
+    period: Literal["DAILY", "MONTHLY"] = Field(description="The period this limit applies to")
+    period_resets_at: str = Field(
+        alias="periodResetsAt", description="When the current period resets (ISO timestamp)"
+    )
+    reason: str | None = Field(default=None, description="Reason for denial (only when allowed=False)")
 
     model_config = ConfigDict(populate_by_name=True)

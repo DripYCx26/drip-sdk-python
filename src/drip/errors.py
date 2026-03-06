@@ -216,7 +216,11 @@ def create_api_error_from_response(
         return DripAuthenticationError(message)
 
     if status_code == 402:
-        payment_request = response_body.get("paymentRequest")
+        payment_request = (
+            response_body.get("payment")
+            or response_body.get("paymentRequest")
+            or response_body.get("x402")
+        )
         return DripPaymentRequiredError(message, payment_request)
 
     if status_code == 429:
