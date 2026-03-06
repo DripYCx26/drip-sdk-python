@@ -194,9 +194,9 @@ class CustomerSpendingCap(BaseModel):
     id: str
     cap_type: str = Field(alias="capType")
     limit_value: str = Field(alias="limitValue")
-    current_usage: str = Field(alias="currentUsage")
-    period_start: str = Field(alias="periodStart")
-    is_active: bool = Field(alias="isActive")
+    current_usage: str | None = Field(default=None, alias="currentUsage")
+    period_start: str | None = Field(default=None, alias="periodStart")
+    is_active: bool | None = Field(default=None, alias="isActive")
     auto_block: bool = Field(alias="autoBlock")
     last_alert_level: str | None = Field(default=None, alias="lastAlertLevel")
 
@@ -231,7 +231,7 @@ class ChargeInfo(BaseModel):
 
     id: str
     amount_usdc: str = Field(alias="amountUsdc")
-    amount_token: str = Field(alias="amountToken")
+    amount_token: str | None = Field(default=None, alias="amountToken")
     tx_hash: str | None = Field(default=None, alias="txHash")
     status: ChargeStatus
 
@@ -293,7 +293,7 @@ class Charge(BaseModel):
     customer: ChargeCustomer
     usage_event: ChargeUsageEvent = Field(alias="usageEvent")
     amount_usdc: str = Field(alias="amountUsdc")
-    amount_token: str = Field(alias="amountToken")
+    amount_token: str | None = Field(default=None, alias="amountToken")
     tx_hash: str | None = Field(default=None, alias="txHash")
     block_number: str | None = Field(default=None, alias="blockNumber")
     status: ChargeStatus
@@ -1064,18 +1064,25 @@ class ListEventsResponse(BaseModel):
     """Paginated list of events."""
 
     data: list[ExecutionEvent]
-    total: int
-    limit: int
-    offset: int
+    pagination: dict[str, object] | None = None
+    total: int | None = None
+    limit: int | None = None
+    offset: int | None = None
+
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class EventTrace(BaseModel):
     """Causality trace for an event."""
 
-    event_id: str = Field(alias="eventId")
-    ancestors: list[ExecutionEvent]
-    children: list[ExecutionEvent]
-    retry_chain: list[ExecutionEvent] = Field(alias="retryChain")
+    event: ExecutionEvent | dict[str, Any] | None = None
+    event_id: str | None = Field(default=None, alias="eventId")
+    ancestors: list[ExecutionEvent] = []
+    children: list[ExecutionEvent] = []
+    retry_chain: list[ExecutionEvent] | dict[str, Any] | None = Field(default=None, alias="retryChain")
+    retries: dict[str, Any] | list[Any] | None = None
+    anomalies: list[Any] | None = None
+    has_failures: bool | None = Field(default=None, alias="hasFailures")
 
     model_config = ConfigDict(populate_by_name=True)
 

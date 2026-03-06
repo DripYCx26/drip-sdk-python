@@ -324,12 +324,16 @@ class Drip:
         else:
             self._key_type = "unknown"
 
-        self._base_url = (
+        raw_url = (
             base_url
             or os.environ.get("DRIP_API_URL")
             or os.environ.get("DRIP_BASE_URL")
             or self.DEFAULT_BASE_URL
         ).rstrip("/")
+        # Auto-append /v1 if not already present
+        if not raw_url.endswith("/v1"):
+            raw_url = f"{raw_url}/v1"
+        self._base_url = raw_url
         self._timeout = timeout or self.DEFAULT_TIMEOUT
 
         # Setup resilience manager
@@ -2653,12 +2657,16 @@ class AsyncDrip:
         else:
             self._key_type = "unknown"
 
-        self._base_url = (
+        raw_url = (
             base_url
             or os.environ.get("DRIP_API_URL")
             or os.environ.get("DRIP_BASE_URL")
             or self.DEFAULT_BASE_URL
         ).rstrip("/")
+        # Auto-append /v1 if not already present
+        if not raw_url.endswith("/v1"):
+            raw_url = f"{raw_url}/v1"
+        self._base_url = raw_url
         self._timeout = timeout or self.DEFAULT_TIMEOUT
 
         # Setup resilience manager
