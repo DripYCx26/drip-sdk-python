@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 
 from ..errors import DripMiddlewareError, DripMiddlewareErrorCode
 from .core import (
+    BILLING_IDENTITY_HEADERS,
     get_header,
     has_payment_proof_headers,
     process_request_async,
@@ -94,9 +95,9 @@ class DripMiddleware(StarletteBaseMiddleware):  # type: ignore[misc]
         app: ASGIApp,
         meter: str,
         quantity: float | Callable[[Request], float | Awaitable[float]],
+        customer_resolver: Callable[[Request], str | Awaitable[str]],
         api_key: str | None = None,
         base_url: str | None = None,
-        customer_resolver: str | Callable[[Request], str | Awaitable[str]] = "header",
         idempotency_key: Callable[[Request, str], str | Awaitable[str]] | None = None,
         on_error: Callable[[Exception, Request], Any] | None = None,
         on_charge: Callable[[Any, Request], Any] | None = None,
@@ -113,7 +114,7 @@ class DripMiddleware(StarletteBaseMiddleware):  # type: ignore[misc]
             quantity: Static quantity or callable to compute dynamically.
             api_key: API key (defaults to DRIP_API_KEY env var).
             base_url: API base URL.
-            customer_resolver: "header", "query", or custom callable.
+            customer_resolver: Callable that resolves customer ID from authenticated request.
             idempotency_key: Optional function to generate idempotency keys.
             on_error: Optional error callback.
             on_charge: Optional success callback.
@@ -149,6 +150,13 @@ class DripMiddleware(StarletteBaseMiddleware):  # type: ignore[misc]
         for exclude in self.exclude_paths:
             if path.startswith(exclude):
                 return await call_next(request)
+
+        # Strip billing identity headers to prevent spoofing (VERIA-14).
+        # These headers must never be trusted from clients.
+        blocked = {h.lower().encode() for h in BILLING_IDENTITY_HEADERS}
+        request.scope["headers"] = [
+            (k, v) for k, v in request.scope["headers"] if k.lower() not in blocked
+        ]
 
         # Process the request
         result = await process_request_async(request, self.config)
@@ -227,9 +235,9 @@ def has_drip_context(request: Request) -> bool:
 def with_drip(
     meter: str,
     quantity: float | Callable[[Request], float | Awaitable[float]],
+    customer_resolver: Callable[[Request], str | Awaitable[str]],
     api_key: str | None = None,
     base_url: str | None = None,
-    customer_resolver: str | Callable[[Request], str | Awaitable[str]] = "header",
     idempotency_key: Callable[[Request, str], str | Awaitable[str]] | None = None,
     on_error: Callable[[Exception, Request], Any] | None = None,
     on_charge: Callable[[Any, Request], Any] | None = None,
@@ -287,6 +295,12 @@ def with_drip(
     def decorator(func: F) -> F:
         @wraps(func)
         async def wrapper(request: Request, *args: Any, **kwargs: Any) -> Any:
+            # Strip billing identity headers to prevent spoofing (VERIA-14)
+            blocked = {h.lower().encode() for h in BILLING_IDENTITY_HEADERS}
+            request.scope["headers"] = [
+                (k, v) for k, v in request.scope["headers"] if k.lower() not in blocked
+            ]
+
             # Process the request
             result = await process_request_async(request, config)
 
@@ -326,9 +340,9 @@ def with_drip(
 def create_drip_dependency(
     meter: str,
     quantity: float | Callable[[Request], float | Awaitable[float]],
+    customer_resolver: Callable[[Request], str | Awaitable[str]],
     api_key: str | None = None,
     base_url: str | None = None,
-    customer_resolver: str | Callable[[Request], str | Awaitable[str]] = "header",
     **kwargs: Any,
 ) -> Callable[[Request], Awaitable[DripContext]]:
     """
@@ -372,6 +386,12 @@ def create_drip_dependency(
     )
 
     async def dependency(request: Request) -> DripContext:
+        # Strip billing identity headers to prevent spoofing (VERIA-14)
+        blocked = {h.lower().encode() for h in BILLING_IDENTITY_HEADERS}
+        request.scope["headers"] = [
+            (k, v) for k, v in request.scope["headers"] if k.lower() not in blocked
+        ]
+
         result = await process_request_async(request, config)
 
         if result.payment_required:

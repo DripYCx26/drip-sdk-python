@@ -8,9 +8,12 @@ requests, resolving customers, handling payments, and creating charges.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import re
 from typing import Any, TypeVar
+
+logger = logging.getLogger(__name__)
 
 from ..client import AsyncDrip, Drip
 from ..errors import (
@@ -19,7 +22,7 @@ from ..errors import (
     DripPaymentRequiredError,
 )
 from ..models import ChargeResult, X402PaymentProof, X402PaymentRequest
-from ..utils import current_timestamp, generate_idempotency_key, generate_nonce
+from ..utils import current_timestamp, generate_nonce
 from .types import (
     DripContext,
     DripMiddlewareConfig,
@@ -28,6 +31,15 @@ from .types import (
 )
 
 T = TypeVar("T")
+
+# =============================================================================
+# Billing Identity Headers (MUST NOT be trusted from clients)
+# =============================================================================
+
+BILLING_IDENTITY_HEADERS: tuple[str, ...] = (
+    "x-drip-customer-id",
+    "x-customer-id",
+)
 
 
 # =============================================================================
@@ -213,71 +225,34 @@ def resolve_customer_id_sync(
     """
     resolver = config.customer_resolver
 
-    if resolver == "header":
-        # Get from X-Drip-Customer-Id header
-        headers = getattr(request, "headers", {})
-        if isinstance(headers, dict):
-            customer_id = get_header(headers, "X-Drip-Customer-Id")
-        else:
-            # Handle Headers-like objects
-            customer_id = headers.get("X-Drip-Customer-Id") or headers.get("x-drip-customer-id")
-
-        if not customer_id:
-            raise DripMiddlewareError(
-                "Customer ID not found in X-Drip-Customer-Id header",
-                DripMiddlewareErrorCode.CUSTOMER_NOT_FOUND,
-                status_code=400,
-            )
-        return customer_id
-
-    elif resolver == "query":
-        # Get from query parameter
-        query_params: dict[str, Any] = {}
-
-        # Try different ways to access query params
-        if hasattr(request, "query_params"):
-            query_params = dict(request.query_params)
-        elif hasattr(request, "args"):
-            query_params = dict(request.args)
-        elif hasattr(request, "query"):
-            query_params = dict(request.query)
-
-        customer_id = query_params.get("customer_id") or query_params.get("customerId")
-
-        if not customer_id:
-            raise DripMiddlewareError(
-                "Customer ID not found in customer_id query parameter",
-                DripMiddlewareErrorCode.CUSTOMER_NOT_FOUND,
-                status_code=400,
-            )
-        return str(customer_id)
-
-    elif callable(resolver):
-        try:
-            result = resolver(request)
-            # Handle coroutines in sync context
-            if asyncio.iscoroutine(result):
-                raise DripMiddlewareError(
-                    "Async customer resolver used in sync context",
-                    DripMiddlewareErrorCode.CONFIGURATION_ERROR,
-                    status_code=500,
-                )
-            return str(result)
-        except DripMiddlewareError:
-            raise
-        except Exception as e:
-            raise DripMiddlewareError(
-                f"Customer resolution failed: {e}",
-                DripMiddlewareErrorCode.CUSTOMER_RESOLUTION_FAILED,
-                status_code=500,
-            ) from e
-
-    else:
+    if not callable(resolver):
         raise DripMiddlewareError(
-            f"Invalid customer resolver: {resolver}",
+            "customer_resolver must be a callable that resolves the customer ID "
+            "from a verified authentication source (e.g., session token, JWT). "
+            "Trusting unauthenticated client headers or query parameters is insecure.",
             DripMiddlewareErrorCode.CONFIGURATION_ERROR,
             status_code=500,
         )
+
+    try:
+        result = resolver(request)
+        # Handle coroutines in sync context
+        if asyncio.iscoroutine(result):
+            raise DripMiddlewareError(
+                "Async customer resolver used in sync context",
+                DripMiddlewareErrorCode.CONFIGURATION_ERROR,
+                status_code=500,
+            )
+        return str(result)
+    except DripMiddlewareError:
+        raise
+    except Exception as e:
+        logger.exception("Customer resolution failed: %s", e)
+        raise DripMiddlewareError(
+            "Customer resolution failed.",
+            DripMiddlewareErrorCode.CUSTOMER_RESOLUTION_FAILED,
+            status_code=500,
+        ) from e
 
 
 async def resolve_customer_id_async(
@@ -299,62 +274,29 @@ async def resolve_customer_id_async(
     """
     resolver = config.customer_resolver
 
-    if resolver == "header":
-        headers = getattr(request, "headers", {})
-        if isinstance(headers, dict):
-            customer_id = get_header(headers, "X-Drip-Customer-Id")
-        else:
-            customer_id = headers.get("X-Drip-Customer-Id") or headers.get("x-drip-customer-id")
-
-        if not customer_id:
-            raise DripMiddlewareError(
-                "Customer ID not found in X-Drip-Customer-Id header",
-                DripMiddlewareErrorCode.CUSTOMER_NOT_FOUND,
-                status_code=400,
-            )
-        return customer_id
-
-    elif resolver == "query":
-        query_params: dict[str, Any] = {}
-
-        if hasattr(request, "query_params"):
-            query_params = dict(request.query_params)
-        elif hasattr(request, "args"):
-            query_params = dict(request.args)
-        elif hasattr(request, "query"):
-            query_params = dict(request.query)
-
-        customer_id = query_params.get("customer_id") or query_params.get("customerId")
-
-        if not customer_id:
-            raise DripMiddlewareError(
-                "Customer ID not found in customer_id query parameter",
-                DripMiddlewareErrorCode.CUSTOMER_NOT_FOUND,
-                status_code=400,
-            )
-        return str(customer_id)
-
-    elif callable(resolver):
-        try:
-            result = resolver(request)
-            if asyncio.iscoroutine(result):
-                result = await result
-            return str(result)
-        except DripMiddlewareError:
-            raise
-        except Exception as e:
-            raise DripMiddlewareError(
-                f"Customer resolution failed: {e}",
-                DripMiddlewareErrorCode.CUSTOMER_RESOLUTION_FAILED,
-                status_code=500,
-            ) from e
-
-    else:
+    if not callable(resolver):
         raise DripMiddlewareError(
-            f"Invalid customer resolver: {resolver}",
+            "customer_resolver must be a callable that resolves the customer ID "
+            "from a verified authentication source (e.g., session token, JWT). "
+            "Trusting unauthenticated client headers or query parameters is insecure.",
             DripMiddlewareErrorCode.CONFIGURATION_ERROR,
             status_code=500,
         )
+
+    try:
+        result = resolver(request)
+        if asyncio.iscoroutine(result):
+            result = await result
+        return str(result)
+    except DripMiddlewareError:
+        raise
+    except Exception as e:
+        logger.exception("Customer resolution failed: %s", e)
+        raise DripMiddlewareError(
+            "Customer resolution failed.",
+            DripMiddlewareErrorCode.CUSTOMER_RESOLUTION_FAILED,
+            status_code=500,
+        ) from e
 
 
 # =============================================================================
@@ -402,8 +344,13 @@ def generate_request_idempotency_key_sync(
     request: Any,
     customer_id: str,
     config: DripMiddlewareConfig,
-) -> str:
-    """Generate idempotency key for request (sync version)."""
+) -> str | None:
+    """Generate idempotency key for request (sync version).
+
+    Returns None when no custom generator is configured, allowing the
+    core SDK's built-in counter-based key (which includes per-call
+    uniqueness) to be used instead.
+    """
     if config.idempotency_key:
         result = config.idempotency_key(request, customer_id)
         if asyncio.iscoroutine(result):
@@ -414,37 +361,29 @@ def generate_request_idempotency_key_sync(
             )
         return str(result)
 
-    # Default: hash of customer_id, meter, method, path
-    method = getattr(request, "method", "GET")
-    url = getattr(request, "url", "")
-    path = str(url).split("?")[0] if url else ""
-
-    return generate_idempotency_key(
-        customer_id=customer_id,
-        step_name=f"{method}:{path}:{config.meter}",
-    )
+    # Let the core SDK generate a unique key with its monotonic counter
+    return None
 
 
 async def generate_request_idempotency_key_async(
     request: Any,
     customer_id: str,
     config: DripMiddlewareConfig,
-) -> str:
-    """Generate idempotency key for request (async version)."""
+) -> str | None:
+    """Generate idempotency key for request (async version).
+
+    Returns None when no custom generator is configured, allowing the
+    core SDK's built-in counter-based key (which includes per-call
+    uniqueness) to be used instead.
+    """
     if config.idempotency_key:
         result = config.idempotency_key(request, customer_id)
         if asyncio.iscoroutine(result):
             result = await result
         return str(result)
 
-    method = getattr(request, "method", "GET")
-    url = getattr(request, "url", "")
-    path = str(url).split("?")[0] if url else ""
-
-    return generate_idempotency_key(
-        customer_id=customer_id,
-        step_name=f"{method}:{path}:{config.meter}",
-    )
+    # Let the core SDK generate a unique key with its monotonic counter
+    return None
 
 
 # =============================================================================
@@ -605,6 +544,17 @@ def process_request_sync(
                 payment_headers=headers,
             )
 
+        # Reject duplicate charges to prevent billing bypass
+        if charge_result.is_duplicate:
+            error = DripMiddlewareError(
+                "Duplicate charge detected — request already billed",
+                DripMiddlewareErrorCode.DUPLICATE_CHARGE,
+                status_code=409,
+            )
+            if config.on_error:
+                config.on_error(error, request)
+            return ProcessRequestResult(success=False, error=error)
+
         # Call success callback if provided
         if config.on_charge:
             config.on_charge(charge_result, request)
@@ -615,7 +565,7 @@ def process_request_sync(
                 drip=client,
                 customer_id=customer_id,
                 charge=charge_result,
-                is_duplicate=charge_result.is_duplicate,
+                is_duplicate=False,
             ),
         )
 
@@ -625,8 +575,9 @@ def process_request_sync(
         return ProcessRequestResult(success=False, error=e)
 
     except Exception as e:
+        logger.exception("Unexpected error in sync request processing: %s", e)
         error = DripMiddlewareError(
-            f"Internal error: {e}",
+            "An internal error occurred while processing the request.",
             DripMiddlewareErrorCode.INTERNAL_ERROR,
             status_code=500,
         )
@@ -718,6 +669,19 @@ async def process_request_async(
                 payment_headers=headers,
             )
 
+        # Reject duplicate charges to prevent billing bypass
+        if charge_result.is_duplicate:
+            error = DripMiddlewareError(
+                "Duplicate charge detected — request already billed",
+                DripMiddlewareErrorCode.DUPLICATE_CHARGE,
+                status_code=409,
+            )
+            if config.on_error:
+                cb_result = config.on_error(error, request)
+                if asyncio.iscoroutine(cb_result):
+                    await cb_result
+            return ProcessRequestResult(success=False, error=error)
+
         # Call success callback if provided
         if config.on_charge:
             result = config.on_charge(charge_result, request)
@@ -730,7 +694,7 @@ async def process_request_async(
                 drip=client,
                 customer_id=customer_id,
                 charge=charge_result,
-                is_duplicate=charge_result.is_duplicate,
+                is_duplicate=False,
             ),
         )
 
@@ -742,8 +706,9 @@ async def process_request_async(
         return ProcessRequestResult(success=False, error=e)
 
     except Exception as e:
+        logger.exception("Unexpected error in async request processing: %s", e)
         error = DripMiddlewareError(
-            f"Internal error: {e}",
+            "An internal error occurred while processing the request.",
             DripMiddlewareErrorCode.INTERNAL_ERROR,
             status_code=500,
         )

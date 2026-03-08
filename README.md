@@ -139,9 +139,8 @@ Every mutating SDK method (`charge`, `track_usage`, `emit_event`) requires an `i
 
 When you omit `idempotency_key`, the SDK generates one automatically — this works for both `drip.core.Drip` and the full `Drip` client. The auto key is:
 
-- **Unique per call** — two separate calls with identical parameters produce different keys (a monotonic counter ensures this).
+- **Unique per call** — two separate calls with identical parameters produce different keys, even across separate worker processes (e.g., Gunicorn, Lambda).
 - **Stable across retries** — the key is generated once and reused for all retry attempts of that call, so network retries are safely deduplicated.
-- **Deterministic** — no randomness; keys are reproducible for debugging.
 
 This means you get **free retry safety** with zero configuration.
 

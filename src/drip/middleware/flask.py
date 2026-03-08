@@ -25,11 +25,20 @@ from functools import wraps
 from typing import TYPE_CHECKING, Any, TypeVar
 
 from .core import (
+    BILLING_IDENTITY_HEADERS,
     get_header,
     has_payment_proof_headers,
     process_request_sync,
 )
 from .types import DripContext, DripMiddlewareConfig
+
+
+def _strip_billing_identity_headers() -> None:
+    """Strip billing identity headers from Flask's request environ to prevent spoofing (VERIA-14)."""
+    for header in BILLING_IDENTITY_HEADERS:
+        # Flask/Werkzeug stores headers as HTTP_<UPPERCASED_DASHES_TO_UNDERSCORES>
+        environ_key = "HTTP_" + header.upper().replace("-", "_")
+        flask_request.environ.pop(environ_key, None)
 
 # Flask type stubs for when Flask is not installed
 if TYPE_CHECKING:
@@ -80,11 +89,12 @@ class DripFlaskMiddleware:
     def __init__(
         self,
         app: Flask | None = None,
+        *,
         meter: str = "",
         quantity: float | Callable[[Request], float] = 1,
+        customer_resolver: Callable[[Request], str],
         api_key: str | None = None,
         base_url: str | None = None,
-        customer_resolver: str | Callable[[Request], str] = "header",
         idempotency_key: Callable[[Request, str], str] | None = None,
         on_error: Callable[[Exception, Request], Any] | None = None,
         on_charge: Callable[[Any, Request], Any] | None = None,
@@ -149,6 +159,9 @@ class DripFlaskMiddleware:
         if not self.config.meter:
             return None
 
+        # Strip billing identity headers before processing (VERIA-14)
+        _strip_billing_identity_headers()
+
         # Process the request
         result = process_request_sync(flask_request, self.config)
 
@@ -183,9 +196,9 @@ class DripFlaskMiddleware:
 def drip_middleware(
     meter: str,
     quantity: float | Callable[[Request], float],
+    customer_resolver: Callable[[Request], str],
     api_key: str | None = None,
     base_url: str | None = None,
-    customer_resolver: str | Callable[[Request], str] = "header",
     idempotency_key: Callable[[Request, str], str] | None = None,
     on_error: Callable[[Exception, Request], Any] | None = None,
     on_charge: Callable[[Any, Request], Any] | None = None,
@@ -243,6 +256,9 @@ def drip_middleware(
     def decorator(func: F) -> F:
         @wraps(func)
         def wrapper(*args: Any, **kwargs: Any) -> Any:
+            # Strip billing identity headers before processing (VERIA-14)
+            _strip_billing_identity_headers()
+
             # Process the request
             result = process_request_sync(flask_request, config)
 

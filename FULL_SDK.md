@@ -505,9 +505,19 @@ meter = client.create_stream_meter(
 
 ### FastAPI
 
+The `customer_resolver` is **required** — it must be a callable that resolves the customer ID from a verified authentication source (e.g., JWT, session token, API key lookup).
+
 ```python
 from fastapi import FastAPI, Request, Depends
 from drip.middleware.fastapi import DripMiddleware, get_drip_context, DripContext
+
+
+def resolve_customer(request: Request) -> str:
+    """Resolve customer from verified JWT."""
+    token = request.headers.get("authorization", "").replace("Bearer ", "")
+    decoded = verify_jwt(token)
+    return decoded["drip_customer_id"]
+
 
 app = FastAPI()
 
@@ -515,7 +525,8 @@ app.add_middleware(
     DripMiddleware,
     meter="api_calls",
     quantity=1,
-    exclude_paths=["/health", "/docs"]
+    customer_resolver=resolve_customer,
+    exclude_paths=["/health", "/docs"],
 )
 
 @app.post("/api/generate")
@@ -531,7 +542,11 @@ async def generate(request: Request):
 from drip.middleware.fastapi import with_drip
 
 @app.post("/api/expensive")
-@with_drip(meter="tokens", quantity=lambda req: calculate_tokens(req))
+@with_drip(
+    meter="tokens",
+    quantity=lambda req: calculate_tokens(req),
+    customer_resolver=resolve_customer,
+)
 async def expensive_operation(request: Request):
     drip = get_drip_context(request)
     return {"charged": drip.charge.charge.amount_usdc}
@@ -545,8 +560,15 @@ from drip.middleware.flask import drip_middleware, get_drip_context
 
 app = Flask(__name__)
 
+
+def resolve_customer(request):
+    """Resolve customer from verified session."""
+    session = verify_session(request.cookies.get("session"))
+    return session["drip_customer_id"]
+
+
 @app.route("/api/generate", methods=["POST"])
-@drip_middleware(meter="api_calls", quantity=1)
+@drip_middleware(meter="api_calls", quantity=1, customer_resolver=resolve_customer)
 def generate():
     drip = get_drip_context()
     return {"success": True}
@@ -554,28 +576,12 @@ def generate():
 
 ### Customer Resolution
 
-For FastAPI, pass these options to `app.add_middleware()`:
+The `customer_resolver` must be a callable that resolves customer identity from a **verified authentication source**. Never trust unauthenticated client headers or query parameters directly.
 
 ```python
-# From header (default)
-app.add_middleware(
-    DripMiddleware,
-    meter="api_calls",
-    quantity=1,
-    customer_resolver="header",
-)
-
-# From query param
-app.add_middleware(
-    DripMiddleware,
-    meter="api_calls",
-    quantity=1,
-    customer_resolver="query",
-)
-
-# Custom resolver
+# From JWT (verified server-side)
 def get_customer_from_jwt(request):
-    token = request.headers.get("Authorization")
+    token = request.headers.get("Authorization", "").replace("Bearer ", "")
     return decode_jwt(token)["customer_id"]
 
 app.add_middleware(
@@ -583,6 +589,31 @@ app.add_middleware(
     meter="api_calls",
     quantity=1,
     customer_resolver=get_customer_from_jwt,
+)
+
+# From session (verified server-side)
+def get_customer_from_session(request):
+    session = verify_session(request.cookies.get("session"))
+    return session["customer_id"]
+
+app.add_middleware(
+    DripMiddleware,
+    meter="api_calls",
+    quantity=1,
+    customer_resolver=get_customer_from_session,
+)
+
+# From API key lookup (verified server-side)
+def get_customer_from_api_key(request):
+    api_key = request.headers.get("x-api-key")
+    customer = lookup_customer_by_api_key(api_key)
+    return customer.drip_id
+
+app.add_middleware(
+    DripMiddleware,
+    meter="api_calls",
+    quantity=1,
+    customer_resolver=get_customer_from_api_key,
 )
 ```
 
@@ -996,6 +1027,7 @@ app.add_middleware(
     DripMiddleware,
     meter="api_calls",
     quantity=1,
+    customer_resolver=resolve_customer,
     skip_in_development=True,  # Skips when DRIP_ENV=development
 )
 ```

@@ -65,10 +65,9 @@ class DripMiddlewareConfig:
         quantity: Static quantity or callable to compute dynamically.
         api_key: API key. Defaults to DRIP_API_KEY environment variable.
         base_url: API base URL. Defaults to production or DRIP_API_URL env var.
-        customer_resolver: How to resolve customer ID:
-            - "header": From X-Drip-Customer-Id header (default)
-            - "query": From customer_id query parameter
-            - Callable: Custom resolver function
+        customer_resolver: A callable that resolves the customer ID from
+            the request using a verified authentication source (e.g.,
+            session token, JWT). Must be explicitly provided.
         idempotency_key: Optional function to generate idempotency keys.
         on_error: Optional error handler callback.
         on_charge: Optional success callback after charging.
@@ -78,9 +77,9 @@ class DripMiddlewareConfig:
 
     meter: str
     quantity: float | Callable[[Any], float | Awaitable[float]]
+    customer_resolver: CustomerResolver[Any]
     api_key: str | None = None
     base_url: str | None = None
-    customer_resolver: str | CustomerResolver[Any] = "header"
     idempotency_key: Callable[[Any, str], str | Awaitable[str]] | None = None
     on_error: Callable[[Exception, Any], Any] | None = None
     on_charge: Callable[[ChargeResult, Any], Any] | None = None

@@ -155,6 +155,7 @@ def _deterministic_idempotency_key(prefix: str, *components: str | float | None)
     To override, pass an explicit ``idempotency_key`` to any SDK method.
     """
     import hashlib
+    import uuid
 
     global _call_counter  # noqa: PLW0603
     with _call_counter_lock:
@@ -163,6 +164,7 @@ def _deterministic_idempotency_key(prefix: str, *components: str | float | None)
 
     parts = [str(c) for c in components if c is not None]
     parts.append(str(seq))
+    parts.append(uuid.uuid4().hex)
     key_input = "|".join(parts)
     hash_hex = hashlib.sha256(key_input.encode()).hexdigest()[:24]
     return f"{prefix}_{hash_hex}"
@@ -899,7 +901,7 @@ class Drip:
         }
 
         body["idempotencyKey"] = idempotency_key or _deterministic_idempotency_key(
-            "chg", customer_id, meter, quantity
+            "chg", resolved_id, meter, quantity
         )
         if metadata:
             body["metadata"] = metadata

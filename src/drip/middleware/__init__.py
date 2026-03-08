@@ -20,6 +20,7 @@ Flask:
 """
 
 from .core import (
+    BILLING_IDENTITY_HEADERS,
     create_async_drip_client,
     create_drip_client,
     generate_payment_request,
@@ -39,6 +40,8 @@ from .types import (
 )
 
 __all__ = [
+    # Security constants
+    "BILLING_IDENTITY_HEADERS",
     # Core functions
     "get_header",
     "has_payment_proof_headers",

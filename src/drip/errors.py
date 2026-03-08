@@ -67,6 +67,10 @@ class DripAPIError(DripError):
         self.response_body = response_body
 
     def __str__(self) -> str:
+        return super().__str__()
+
+    def detailed_message(self) -> str:
+        """Return full error details including response body (for logging only, never expose to clients)."""
         base = super().__str__()
         if self.response_body:
             return f"{base} | response: {self.response_body}"
@@ -164,6 +168,7 @@ class DripMiddlewareErrorCode(str, Enum):
     PAYMENT_REQUIRED = "PAYMENT_REQUIRED"
     PAYMENT_VERIFICATION_FAILED = "PAYMENT_VERIFICATION_FAILED"
     CHARGE_FAILED = "CHARGE_FAILED"
+    DUPLICATE_CHARGE = "DUPLICATE_CHARGE"
     CONFIGURATION_ERROR = "CONFIGURATION_ERROR"
     INTERNAL_ERROR = "INTERNAL_ERROR"
 
