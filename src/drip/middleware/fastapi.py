@@ -8,6 +8,10 @@ Example:
     >>> from fastapi import FastAPI, Request, Depends
     >>> from drip.middleware.fastapi import drip_middleware, get_drip_context, DripContext
     >>>
+    >>> def resolve_customer(request: Request) -> str:
+    ...     # Must resolve from verified auth (JWT/session/API key lookup)
+    ...     return verify_jwt(request.headers["authorization"])["drip_customer_id"]
+    >>>
     >>> app = FastAPI()
     >>>
     >>> # Apply middleware
@@ -15,6 +19,7 @@ Example:
     ...     DripMiddleware,
     ...     meter="api_calls",
     ...     quantity=1,
+    ...     customer_resolver=resolve_customer,
     ... )
     >>>
     >>> # Or use dependency injection
@@ -82,11 +87,15 @@ class DripMiddleware(StarletteBaseMiddleware):  # type: ignore[misc]
         >>> from fastapi import FastAPI
         >>> from drip.middleware.fastapi import DripMiddleware
         >>>
+        >>> def resolve_customer(request: Request) -> str:
+        ...     return verify_jwt(request.headers["authorization"])["drip_customer_id"]
+        >>>
         >>> app = FastAPI()
         >>> app.add_middleware(
         ...     DripMiddleware,
         ...     meter="api_calls",
         ...     quantity=1,
+        ...     customer_resolver=resolve_customer,
         ... )
     """
 
@@ -257,7 +266,7 @@ def with_drip(
         >>> app = FastAPI()
         >>>
         >>> @app.post("/api/generate")
-        >>> @with_drip(meter="api_calls", quantity=1)
+        >>> @with_drip(meter="api_calls", quantity=1, customer_resolver=resolve_customer)
         >>> async def generate(request: Request):
         ...     drip = request.state.drip_context
         ...     return {"charged": drip.charge.charge.amount_usdc}
@@ -357,6 +366,7 @@ def create_drip_dependency(
         >>> charge_api_call = create_drip_dependency(
         ...     meter="api_calls",
         ...     quantity=1,
+        ...     customer_resolver=resolve_customer,
         ... )
         >>>
         >>> @app.post("/api/generate")

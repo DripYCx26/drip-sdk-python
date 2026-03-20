@@ -263,6 +263,21 @@ class TrackUsageResult(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
 
+class TrackUsageBatchResult(BaseModel):
+    """Result of tracking usage in batch mode."""
+
+    success: bool
+    mode: Literal["batch"] = "batch"
+    customer_id: str = Field(alias="customerId")
+    usage_type: str = Field(alias="usageType")
+    quantity: float
+    idempotency_key: str = Field(alias="idempotencyKey")
+    pending_events: int = Field(alias="pendingEvents")
+    message: str
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
 class ChargeCustomer(BaseModel):
     """Customer info within a Charge."""
 
@@ -1100,5 +1115,90 @@ class EntitlementCheckResult(BaseModel):
         alias="periodResetsAt", description="When the current period resets (ISO timestamp)"
     )
     reason: str | None = Field(default=None, description="Reason for denial (only when allowed=False)")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+# =============================================================================
+# Entitlement Plan Types
+# =============================================================================
+
+
+class EntitlementPlan(BaseModel):
+    """An entitlement plan."""
+
+    id: str
+    name: str
+    slug: str
+    description: str | None = None
+    is_default: bool = Field(alias="isDefault", default=False)
+    is_active: bool = Field(alias="isActive", default=True)
+    created_at: str = Field(alias="createdAt")
+    updated_at: str = Field(alias="updatedAt")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class EntitlementRule(BaseModel):
+    """A feature rule within an entitlement plan."""
+
+    id: str
+    plan_id: str = Field(alias="planId")
+    feature_key: str = Field(alias="featureKey")
+    limit_type: Literal["COUNT", "AMOUNT"] = Field(alias="limitType")
+    period: Literal["DAILY", "MONTHLY"]
+    limit_value: float = Field(alias="limitValue")
+    unlimited: bool = False
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class CustomerEntitlement(BaseModel):
+    """A customer's entitlement assignment including usage."""
+
+    plan_id: str = Field(alias="planId")
+    plan_name: str = Field(alias="planName")
+    plan_slug: str = Field(alias="planSlug")
+    rules: list[EntitlementRule] = Field(default_factory=list)
+    overrides: dict[str, Any] = Field(default_factory=dict)
+    usage: dict[str, Any] = Field(default_factory=dict)
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+# =============================================================================
+# Contract Types
+# =============================================================================
+
+
+class ContractPriceOverride(BaseModel):
+    """A price override within a contract."""
+
+    unit_type: str = Field(alias="unitType")
+    unit_price_usdc: str = Field(alias="unitPriceUsdc")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class Contract(BaseModel):
+    """A per-customer pricing contract."""
+
+    id: str
+    customer_id: str = Field(alias="customerId")
+    name: str
+    status: Literal["ACTIVE", "EXPIRED", "CANCELLED"]
+    start_date: str = Field(alias="startDate")
+    end_date: str | None = Field(alias="endDate", default=None)
+    minimum_usdc: str | None = Field(alias="minimumUsdc", default=None)
+    maximum_usdc: str | None = Field(alias="maximumUsdc", default=None)
+    discount_pct: float | None = Field(alias="discountPct", default=None)
+    prepaid_amount_usdc: str | None = Field(alias="prepaidAmountUsdc", default=None)
+    prepaid_balance_usdc: str | None = Field(alias="prepaidBalanceUsdc", default=None)
+    prepaid_rollover: bool = Field(alias="prepaidRollover", default=False)
+    included_units: dict[str, int] | None = Field(alias="includedUnits", default=None)
+    metadata: dict[str, Any] | None = None
+    overrides: list[ContractPriceOverride] = Field(default_factory=list)
+    created_at: str = Field(alias="createdAt")
+    updated_at: str = Field(alias="updatedAt")
 
     model_config = ConfigDict(populate_by_name=True)

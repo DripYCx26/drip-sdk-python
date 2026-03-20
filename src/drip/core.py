@@ -45,7 +45,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any
+from typing import Any, Literal, overload
 
 import httpx
 
@@ -151,6 +151,35 @@ class TrackUsageResult:
 
     is_internal: bool
     """Whether this customer is internal-only."""
+
+    message: str
+    """Confirmation message."""
+
+
+@dataclass
+class TrackUsageBatchResult:
+    """Result of tracking usage in batch mode."""
+
+    success: bool
+    """Whether the usage was recorded."""
+
+    mode: Literal["batch"]
+    """The write mode used for this request."""
+
+    customer_id: str
+    """Customer ID."""
+
+    usage_type: str
+    """Usage type that was recorded."""
+
+    quantity: float
+    """Quantity recorded."""
+
+    idempotency_key: str | None
+    """Idempotency key for queued batch writes."""
+
+    pending_events: int | None
+    """Number of pending queued events for batch writes."""
 
     message: str
     """Confirmation message."""
@@ -692,6 +721,7 @@ class Drip:
     # Usage Tracking (No Billing)
     # ==========================================================================
 
+    @overload
     def track_usage(
         self,
         customer_id: str,
@@ -701,7 +731,33 @@ class Drip:
         units: str | None = None,
         description: str | None = None,
         metadata: dict[str, Any] | None = None,
-    ) -> TrackUsageResult:
+        mode: Literal["batch"] = "batch",
+    ) -> TrackUsageBatchResult: ...
+
+    @overload
+    def track_usage(
+        self,
+        customer_id: str,
+        meter: str,
+        quantity: float,
+        idempotency_key: str | None = None,
+        units: str | None = None,
+        description: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        mode: Literal["batch", "sync"] = "sync",
+    ) -> TrackUsageResult: ...
+
+    def track_usage(
+        self,
+        customer_id: str,
+        meter: str,
+        quantity: float,
+        idempotency_key: str | None = None,
+        units: str | None = None,
+        description: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        mode: Literal["batch", "sync"] = "sync",
+    ) -> TrackUsageResult | TrackUsageBatchResult:
         """
         Record usage for tracking WITHOUT billing.
 
@@ -720,6 +776,8 @@ class Drip:
             units: Human-readable unit label.
             description: Human-readable description.
             metadata: Additional metadata.
+            mode: `sync` (default) for immediate persistence, or `batch`
+                for high-throughput queued writes.
 
         Returns:
             The tracked usage event.
@@ -745,7 +803,22 @@ class Drip:
         if metadata:
             payload["metadata"] = metadata
 
-        data = self._request("POST", "/usage/internal", json=payload)
+        if mode not in ("batch", "sync"):
+            raise DripError("mode must be 'batch' or 'sync'")
+        path = "/usage/internal" if mode == "sync" else "/usage/internal/batch"
+        data = self._request("POST", path, json=payload)
+
+        if mode == "batch":
+            return TrackUsageBatchResult(
+                success=data.get("success", True),
+                mode="batch",
+                customer_id=data.get("customerId", customer_id),
+                usage_type=data.get("usageType", meter),
+                quantity=data.get("quantity", quantity),
+                idempotency_key=data.get("idempotencyKey"),
+                pending_events=data.get("pendingEvents"),
+                message=data.get("message", "Usage tracked"),
+            )
 
         return TrackUsageResult(
             success=data.get("success", True),
@@ -1482,6 +1555,7 @@ class AsyncDrip:
 
         return ListCustomersResponse(data=customers, count=data.get("count", len(customers)))
 
+    @overload
     async def track_usage(
         self,
         customer_id: str,
@@ -1491,7 +1565,33 @@ class AsyncDrip:
         units: str | None = None,
         description: str | None = None,
         metadata: dict[str, Any] | None = None,
-    ) -> TrackUsageResult:
+        mode: Literal["batch"] = "batch",
+    ) -> TrackUsageBatchResult: ...
+
+    @overload
+    async def track_usage(
+        self,
+        customer_id: str,
+        meter: str,
+        quantity: float,
+        idempotency_key: str | None = None,
+        units: str | None = None,
+        description: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        mode: Literal["batch", "sync"] = "sync",
+    ) -> TrackUsageResult: ...
+
+    async def track_usage(
+        self,
+        customer_id: str,
+        meter: str,
+        quantity: float,
+        idempotency_key: str | None = None,
+        units: str | None = None,
+        description: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        mode: Literal["batch", "sync"] = "sync",
+    ) -> TrackUsageResult | TrackUsageBatchResult:
         """Record usage for tracking WITHOUT billing."""
         payload: dict[str, Any] = {
             "customerId": customer_id,
@@ -1507,7 +1607,22 @@ class AsyncDrip:
         if metadata:
             payload["metadata"] = metadata
 
-        data = await self._request("POST", "/usage/internal", json=payload)
+        if mode not in ("batch", "sync"):
+            raise DripError("mode must be 'batch' or 'sync'")
+        path = "/usage/internal" if mode == "sync" else "/usage/internal/batch"
+        data = await self._request("POST", path, json=payload)
+
+        if mode == "batch":
+            return TrackUsageBatchResult(
+                success=data.get("success", True),
+                mode="batch",
+                customer_id=data.get("customerId", customer_id),
+                usage_type=data.get("usageType", meter),
+                quantity=data.get("quantity", quantity),
+                idempotency_key=data.get("idempotencyKey"),
+                pending_events=data.get("pendingEvents"),
+                message=data.get("message", "Usage tracked"),
+            )
 
         return TrackUsageResult(
             success=data.get("success", True),

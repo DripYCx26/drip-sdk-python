@@ -37,7 +37,7 @@ import time
 from collections.abc import Callable
 from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime
-from typing import Any, TypeVar
+from typing import Any, Literal, TypeVar, overload
 
 import httpx
 
@@ -62,15 +62,20 @@ from .models import (
     ChargeAsyncResult,
     ChargeResult,
     CheckoutResult,
+    Contract,
+    ContractPriceOverride,
     CostEstimateResponse,
     CreateWebhookResponse,
     Customer,
+    CustomerEntitlement,
     CustomerSpendingCap,
     CustomerStatus,
     DeleteWebhookResponse,
     DripConfig,
     EmitEventsBatchResult,
     EndRunResult,
+    EntitlementPlan,
+    EntitlementRule,
     EventResult,
     EventTrace,
     ExecutionEvent,
@@ -96,6 +101,7 @@ from .models import (
     TimelineEvent,
     TimelineRunInfo,
     TimelineTotals,
+    TrackUsageBatchResult,
     TrackUsageResult,
     Webhook,
     WebhookFilters,
@@ -155,7 +161,6 @@ def _deterministic_idempotency_key(prefix: str, *components: str | float | None)
     To override, pass an explicit ``idempotency_key`` to any SDK method.
     """
     import hashlib
-    import uuid
 
     global _call_counter  # noqa: PLW0603
     with _call_counter_lock:
@@ -164,7 +169,6 @@ def _deterministic_idempotency_key(prefix: str, *components: str | float | None)
 
     parts = [str(c) for c in components if c is not None]
     parts.append(str(seq))
-    parts.append(uuid.uuid4().hex)
     key_input = "|".join(parts)
     hash_hex = hashlib.sha256(key_input.encode()).hexdigest()[:24]
     return f"{prefix}_{hash_hex}"
@@ -318,7 +322,18 @@ class Drip:
                 "API key is required. Pass it directly or set DRIP_API_KEY environment variable."
             )
 
-        # Detect key type from prefix (mirrors TS SDK behavior)
+        # Validate API key format early so typos are caught at construction time
+        if not self._api_key.startswith("sk_") and not self._api_key.startswith("pk_"):
+            raise DripAuthenticationError(
+                f'Invalid API key format: key must start with "sk_" (secret) or "pk_" (public). '
+                f'Got "{self._api_key[:8]}..."'
+            )
+        if len(self._api_key) < 10:
+            raise DripAuthenticationError(
+                "Invalid API key: key is too short. Check that you copied the full key from the Drip dashboard."
+            )
+
+        # Detect key type from prefix
         if self._api_key.startswith("sk_"):
             self._key_type: str = "secret"
         elif self._api_key.startswith("pk_"):
@@ -338,13 +353,15 @@ class Drip:
         self._base_url = raw_url
         self._timeout = timeout or self.DEFAULT_TIMEOUT
 
-        # Setup resilience manager
-        if resilience is True:
-            self._resilience = ResilienceManager(ResilienceConfig.default())
+        # Setup resilience manager — enabled by default for production safety.
+        # Explicit False disables it for testing or low-level control.
+        if resilience is False:
+            self._resilience = None
         elif isinstance(resilience, ResilienceConfig):
             self._resilience = ResilienceManager(resilience)
         else:
-            self._resilience = None
+            # Default: enabled with standard config (resilience=True or None)
+            self._resilience = ResilienceManager(ResilienceConfig.default())
 
         # Customer resolution cache: external_customer_id -> drip_customer_id
         self._customer_cache: dict[str, str] = {}
@@ -468,8 +485,9 @@ class Drip:
                 data = response.json()
                 status = data.get("status", "unknown")
                 timestamp = data.get("timestamp", int(time.time()))
-            except Exception:
-                status = "healthy" if response.is_success else f"error:{response.status_code}"
+            except (ValueError, KeyError) as parse_err:
+                logger.warning("ping: failed to parse health response: %s", parse_err)
+                status = "unknown" if response.is_success else f"error:{response.status_code}"
                 timestamp = int(time.time())
 
             return {
@@ -855,6 +873,226 @@ class Drip:
         self._delete(f"/customers/{customer_id}/spending-caps/{cap_id}")
 
     # =========================================================================
+    # Customer Provisioning
+    # =========================================================================
+
+    def provision_customer(self, customer_id: str) -> Customer:
+        """Provision (or re-provision) an ERC-4337 smart account for a customer."""
+        self._assert_secret_key("provision_customer()")
+        response = self._post(f"/customers/{customer_id}/provision", json={})
+        return Customer.model_validate(response)
+
+    def sync_customer_balance(self, customer_id: str) -> dict[str, str]:
+        """Sync a customer's on-chain balance from the blockchain."""
+        self._assert_secret_key("sync_customer_balance()")
+        return self._post(f"/customers/{customer_id}/sync-balance", json={})
+
+    def assign_customer_entitlement(
+        self,
+        customer_id: str,
+        plan_id: str,
+        overrides: dict[str, Any] | None = None,
+    ) -> CustomerEntitlement:
+        """Assign an entitlement plan to a customer with optional overrides."""
+        self._assert_secret_key("assign_customer_entitlement()")
+        body: dict[str, Any] = {"planId": plan_id}
+        if overrides:
+            body["overrides"] = overrides
+        response = self._put(f"/customers/{customer_id}/entitlement", json=body)
+        return CustomerEntitlement.model_validate(response)
+
+    def get_customer_entitlement(self, customer_id: str) -> CustomerEntitlement:
+        """Get a customer's assigned entitlement plan and current usage."""
+        self._assert_secret_key("get_customer_entitlement()")
+        response = self._get(f"/customers/{customer_id}/entitlement")
+        return CustomerEntitlement.model_validate(response)
+
+    # =========================================================================
+    # Contracts
+    # =========================================================================
+
+    def create_contract(
+        self,
+        customer_id: str,
+        name: str,
+        start_date: str,
+        *,
+        end_date: str | None = None,
+        minimum_usdc: str | None = None,
+        maximum_usdc: str | None = None,
+        discount_pct: float | None = None,
+        prepaid_amount_usdc: str | None = None,
+        prepaid_rollover: bool | None = None,
+        included_units: dict[str, int] | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> Contract:
+        """Create a per-customer pricing contract."""
+        self._assert_secret_key("create_contract()")
+        body: dict[str, Any] = {
+            "customerId": customer_id,
+            "name": name,
+            "startDate": start_date,
+        }
+        if end_date is not None:
+            body["endDate"] = end_date
+        if minimum_usdc is not None:
+            body["minimumUsdc"] = minimum_usdc
+        if maximum_usdc is not None:
+            body["maximumUsdc"] = maximum_usdc
+        if discount_pct is not None:
+            body["discountPct"] = discount_pct
+        if prepaid_amount_usdc is not None:
+            body["prepaidAmountUsdc"] = prepaid_amount_usdc
+        if prepaid_rollover is not None:
+            body["prepaidRollover"] = prepaid_rollover
+        if included_units is not None:
+            body["includedUnits"] = included_units
+        if metadata is not None:
+            body["metadata"] = metadata
+        response = self._post("/contracts", json=body)
+        return Contract.model_validate(response)
+
+    def list_contracts(
+        self,
+        *,
+        customer_id: str | None = None,
+        status: str | None = None,
+    ) -> list[Contract]:
+        """List contracts for your business."""
+        self._assert_secret_key("list_contracts()")
+        params: dict[str, str] = {}
+        if customer_id:
+            params["customerId"] = customer_id
+        if status:
+            params["status"] = status
+        response = self._get("/contracts", params=params)
+        contracts = response.get("contracts", []) if isinstance(response, dict) else []
+        return [Contract.model_validate(c) for c in contracts]
+
+    def get_contract(self, contract_id: str) -> Contract:
+        """Get a specific contract by ID."""
+        self._assert_secret_key("get_contract()")
+        response = self._get(f"/contracts/{contract_id}")
+        return Contract.model_validate(response)
+
+    def update_contract(self, contract_id: str, **kwargs: Any) -> Contract:
+        """Update a contract. Pass keyword arguments for fields to update."""
+        self._assert_secret_key("update_contract()")
+        response = self._patch(f"/contracts/{contract_id}", json=kwargs)
+        return Contract.model_validate(response)
+
+    def delete_contract(self, contract_id: str) -> None:
+        """Cancel a contract."""
+        self._assert_secret_key("delete_contract()")
+        self._delete(f"/contracts/{contract_id}")
+
+    def add_contract_override(
+        self,
+        contract_id: str,
+        unit_type: str,
+        unit_price_usd: str,
+    ) -> ContractPriceOverride:
+        """Add a price override to a contract."""
+        self._assert_secret_key("add_contract_override()")
+        response = self._post(
+            f"/contracts/{contract_id}/overrides",
+            json={"unitType": unit_type, "unitPriceUsd": unit_price_usd},
+        )
+        return ContractPriceOverride.model_validate(response)
+
+    def remove_contract_override(self, contract_id: str, unit_type: str) -> None:
+        """Remove a price override from a contract."""
+        self._assert_secret_key("remove_contract_override()")
+        self._delete(f"/contracts/{contract_id}/overrides/{unit_type}")
+
+    # =========================================================================
+    # Entitlement Plans
+    # =========================================================================
+
+    def create_entitlement_plan(
+        self,
+        name: str,
+        slug: str,
+        *,
+        description: str | None = None,
+        is_default: bool = False,
+    ) -> EntitlementPlan:
+        """Create an entitlement plan."""
+        self._assert_secret_key("create_entitlement_plan()")
+        body: dict[str, Any] = {"name": name, "slug": slug}
+        if description is not None:
+            body["description"] = description
+        if is_default:
+            body["isDefault"] = True
+        response = self._post("/entitlement-plans", json=body)
+        return EntitlementPlan.model_validate(response)
+
+    def list_entitlement_plans(self) -> list[EntitlementPlan]:
+        """List all entitlement plans."""
+        self._assert_secret_key("list_entitlement_plans()")
+        response = self._get("/entitlement-plans")
+        plans = response.get("plans", []) if isinstance(response, dict) else []
+        return [EntitlementPlan.model_validate(p) for p in plans]
+
+    def get_entitlement_plan(self, plan_id: str) -> EntitlementPlan:
+        """Get a specific entitlement plan."""
+        self._assert_secret_key("get_entitlement_plan()")
+        response = self._get(f"/entitlement-plans/{plan_id}")
+        return EntitlementPlan.model_validate(response)
+
+    def update_entitlement_plan(self, plan_id: str, **kwargs: Any) -> EntitlementPlan:
+        """Update an entitlement plan."""
+        self._assert_secret_key("update_entitlement_plan()")
+        response = self._patch(f"/entitlement-plans/{plan_id}", json=kwargs)
+        return EntitlementPlan.model_validate(response)
+
+    def delete_entitlement_plan(self, plan_id: str) -> None:
+        """Deactivate an entitlement plan."""
+        self._assert_secret_key("delete_entitlement_plan()")
+        self._delete(f"/entitlement-plans/{plan_id}")
+
+    def add_entitlement_rule(
+        self,
+        plan_id: str,
+        feature_key: str,
+        limit_type: str,
+        period: str,
+        limit_value: float,
+        *,
+        unlimited: bool = False,
+    ) -> EntitlementRule:
+        """Add a feature rule to an entitlement plan."""
+        self._assert_secret_key("add_entitlement_rule()")
+        body: dict[str, Any] = {
+            "featureKey": feature_key,
+            "limitType": limit_type,
+            "period": period,
+            "limitValue": limit_value,
+        }
+        if unlimited:
+            body["unlimited"] = True
+        response = self._post(f"/entitlement-plans/{plan_id}/rules", json=body)
+        return EntitlementRule.model_validate(response)
+
+    def list_entitlement_rules(self, plan_id: str) -> list[EntitlementRule]:
+        """List rules for an entitlement plan."""
+        self._assert_secret_key("list_entitlement_rules()")
+        response = self._get(f"/entitlement-plans/{plan_id}/rules")
+        rules = response.get("rules", []) if isinstance(response, dict) else []
+        return [EntitlementRule.model_validate(r) for r in rules]
+
+    def update_entitlement_rule(self, rule_id: str, **kwargs: Any) -> EntitlementRule:
+        """Update an entitlement rule."""
+        self._assert_secret_key("update_entitlement_rule()")
+        response = self._patch(f"/entitlement-rules/{rule_id}", json=kwargs)
+        return EntitlementRule.model_validate(response)
+
+    def delete_entitlement_rule(self, rule_id: str) -> None:
+        """Delete an entitlement rule."""
+        self._assert_secret_key("delete_entitlement_rule()")
+        self._delete(f"/entitlement-rules/{rule_id}")
+
+    # =========================================================================
     # Charging & Usage
     # =========================================================================
 
@@ -952,6 +1190,7 @@ class Drip:
         response = self._get("/charges", params=params)
         return ListChargesResponse.model_validate(response)
 
+    @overload
     def track_usage(
         self,
         customer_id: str | None = None,
@@ -961,9 +1200,39 @@ class Drip:
         units: str | None = None,
         description: str | None = None,
         metadata: dict[str, Any] | None = None,
+        mode: Literal["batch"] = "batch",
         *,
         user: str | None = None,
-    ) -> TrackUsageResult:
+    ) -> TrackUsageBatchResult: ...
+
+    @overload
+    def track_usage(
+        self,
+        customer_id: str | None = None,
+        meter: str = "",
+        quantity: float = 0,
+        idempotency_key: str | None = None,
+        units: str | None = None,
+        description: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        mode: Literal["batch", "sync"] = "sync",
+        *,
+        user: str | None = None,
+    ) -> TrackUsageResult: ...
+
+    def track_usage(
+        self,
+        customer_id: str | None = None,
+        meter: str = "",
+        quantity: float = 0,
+        idempotency_key: str | None = None,
+        units: str | None = None,
+        description: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        mode: Literal["batch", "sync"] = "sync",
+        *,
+        user: str | None = None,
+    ) -> TrackUsageResult | TrackUsageBatchResult:
         """
         Record usage for internal visibility WITHOUT billing.
 
@@ -982,11 +1251,14 @@ class Drip:
             user: Your external user ID. Auto-creates customer on first use.
 
         Returns:
-            TrackUsageResult with event ID and confirmation.
+            TrackUsageResult for sync mode, or TrackUsageBatchResult for
+            explicit batch mode.
         """
         resolved_id = self._resolve_customer(user) if user else customer_id
         if not resolved_id:
             raise DripError("Either 'customer_id' or 'user' is required")
+        if mode not in ("batch", "sync"):
+            raise DripError("mode must be 'batch' or 'sync'")
 
         body: dict[str, Any] = {
             "customerId": resolved_id,
@@ -1004,7 +1276,11 @@ class Drip:
         if metadata:
             body["metadata"] = metadata
 
-        response = self._post("/usage/internal", json=body)
+        path = "/usage/internal" if mode == "sync" else "/usage/internal/batch"
+        response = self._post(path, json=body)
+        if mode == "batch":
+            response["mode"] = "batch"
+            return TrackUsageBatchResult.model_validate(response)
         return TrackUsageResult.model_validate(response)
 
     def charge_async(
@@ -1200,7 +1476,10 @@ class Drip:
 
         # Generate idempotency key BEFORE the call - this is the key insight!
         # Even if we crash after the API call, retrying with the same key is safe.
-        key = idempotency_key or f"wrap_{int(time.time() * 1000)}_{random.randbytes(8).hex()[:9]}"
+        # Use deterministic key so retries produce the same key for deduplication.
+        key = idempotency_key or _deterministic_idempotency_key(
+            "wrap", resolved_id or "", meter, str(call)
+        )
 
         # Step 1: Make the external API call (no retry - we don't control this)
         result = call()
@@ -2651,7 +2930,18 @@ class AsyncDrip:
                 "API key is required. Pass it directly or set DRIP_API_KEY environment variable."
             )
 
-        # Detect key type from prefix (mirrors TS SDK behavior)
+        # Validate API key format early so typos are caught at construction time
+        if not self._api_key.startswith("sk_") and not self._api_key.startswith("pk_"):
+            raise DripAuthenticationError(
+                f'Invalid API key format: key must start with "sk_" (secret) or "pk_" (public). '
+                f'Got "{self._api_key[:8]}..."'
+            )
+        if len(self._api_key) < 10:
+            raise DripAuthenticationError(
+                "Invalid API key: key is too short. Check that you copied the full key from the Drip dashboard."
+            )
+
+        # Detect key type from prefix
         if self._api_key.startswith("sk_"):
             self._key_type: str = "secret"
         elif self._api_key.startswith("pk_"):
@@ -2671,13 +2961,13 @@ class AsyncDrip:
         self._base_url = raw_url
         self._timeout = timeout or self.DEFAULT_TIMEOUT
 
-        # Setup resilience manager
-        if resilience is True:
-            self._resilience = ResilienceManager(ResilienceConfig.default())
+        # Setup resilience manager — enabled by default for production safety.
+        if resilience is False:
+            self._resilience = None
         elif isinstance(resilience, ResilienceConfig):
             self._resilience = ResilienceManager(resilience)
         else:
-            self._resilience = None
+            self._resilience = ResilienceManager(ResilienceConfig.default())
 
         # Customer resolution cache: external_customer_id -> drip_customer_id
         self._customer_cache: dict[str, str] = {}
@@ -2789,8 +3079,9 @@ class AsyncDrip:
                 data = response.json()
                 status = data.get("status", "unknown")
                 timestamp = data.get("timestamp", int(time.time()))
-            except Exception:
-                status = "healthy" if response.is_success else f"error:{response.status_code}"
+            except (ValueError, KeyError) as parse_err:
+                logger.warning("ping: failed to parse health response: %s", parse_err)
+                status = "unknown" if response.is_success else f"error:{response.status_code}"
                 timestamp = int(time.time())
 
             return {
@@ -3178,6 +3469,7 @@ class AsyncDrip:
         response = await self._get("/charges", params=params)
         return ListChargesResponse.model_validate(response)
 
+    @overload
     async def track_usage(
         self,
         customer_id: str | None = None,
@@ -3187,9 +3479,39 @@ class AsyncDrip:
         units: str | None = None,
         description: str | None = None,
         metadata: dict[str, Any] | None = None,
+        mode: Literal["batch"] = "batch",
         *,
         user: str | None = None,
-    ) -> TrackUsageResult:
+    ) -> TrackUsageBatchResult: ...
+
+    @overload
+    async def track_usage(
+        self,
+        customer_id: str | None = None,
+        meter: str = "",
+        quantity: float = 0,
+        idempotency_key: str | None = None,
+        units: str | None = None,
+        description: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        mode: Literal["batch", "sync"] = "sync",
+        *,
+        user: str | None = None,
+    ) -> TrackUsageResult: ...
+
+    async def track_usage(
+        self,
+        customer_id: str | None = None,
+        meter: str = "",
+        quantity: float = 0,
+        idempotency_key: str | None = None,
+        units: str | None = None,
+        description: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        mode: Literal["batch", "sync"] = "sync",
+        *,
+        user: str | None = None,
+    ) -> TrackUsageResult | TrackUsageBatchResult:
         """
         Record usage for internal visibility WITHOUT billing.
 
@@ -3199,6 +3521,8 @@ class AsyncDrip:
         resolved_id = (await self._resolve_customer(user)) if user else customer_id
         if not resolved_id:
             raise DripError("Either 'customer_id' or 'user' is required")
+        if mode not in ("batch", "sync"):
+            raise DripError("mode must be 'batch' or 'sync'")
 
         body: dict[str, Any] = {
             "customerId": resolved_id,
@@ -3216,7 +3540,11 @@ class AsyncDrip:
         if metadata:
             body["metadata"] = metadata
 
-        response = await self._post("/usage/internal", json=body)
+        path = "/usage/internal" if mode == "sync" else "/usage/internal/batch"
+        response = await self._post(path, json=body)
+        if mode == "batch":
+            response["mode"] = "batch"
+            return TrackUsageBatchResult.model_validate(response)
         return TrackUsageResult.model_validate(response)
 
     async def charge_async(
@@ -3317,8 +3645,10 @@ class AsyncDrip:
         if not resolved_id:
             raise DripError("Either 'customer_id' or 'user' is required")
 
-        # Generate idempotency key BEFORE the call
-        key = idempotency_key or f"wrap_{int(time.time() * 1000)}_{random.randbytes(8).hex()[:9]}"
+        # Generate idempotency key BEFORE the call (deterministic for retry safety)
+        key = idempotency_key or _deterministic_idempotency_key(
+            "wrap", resolved_id or "", meter, str(call)
+        )
 
         # Step 1: Make the external API call (no retry - we don't control this)
         api_result = call()

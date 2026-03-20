@@ -171,6 +171,7 @@ from .models import (
     TimelineEvent,
     TimelineRunInfo,
     TimelineTotals,
+    TrackUsageBatchResult,
     TrackUsageResult,
     Webhook,
     WebhookEventType,
@@ -259,6 +260,7 @@ __all__ = [
     "ListChargesOptions",
     "ListChargesResponse",
     # Track usage (no billing)
+    "TrackUsageBatchResult",
     "TrackUsageResult",
     # Wrap API Call
     "WrapApiCallResult",

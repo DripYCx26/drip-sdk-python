@@ -205,15 +205,13 @@ class StreamMeter:
         Flush accumulated usage and charge the customer (sync).
 
         If total is 0, returns a success result with no charge.
-        After flush, the meter resets to 0 and can be reused.
+        After flush, usage that was successfully charged is subtracted,
+        preserving any usage added concurrently during the charge call.
 
         Returns:
             The flush result including charge details.
         """
         quantity = self._total
-
-        # Reset total before charging to avoid double-counting on retry
-        self._total = 0
 
         # Nothing to charge
         if quantity == 0:
@@ -224,10 +222,14 @@ class StreamMeter:
                 is_duplicate=False,
             )
 
-        # Generate idempotency key for this flush
+        # Increment flush count BEFORE the charge call so that retries
+        # get a new idempotency key. If we only incremented on success,
+        # a failed flush followed by a retry would reuse the same key
+        # and the backend would deduplicate it — silently losing the charge.
         idempotency_key = None
         if self._options.idempotency_key:
             idempotency_key = f"{self._options.idempotency_key}_flush_{self._flush_count}"
+        self._flush_count += 1
 
         # Charge the customer
         charge_result = self._charge_fn(
@@ -244,8 +246,13 @@ class StreamMeter:
                 "Cannot use sync flush() with async client. Use flush_async() instead."
             )
 
+        if not charge_result.success:
+            raise RuntimeError("StreamMeter flush failed: charge was not accepted")
+
         self._flushed = True
-        self._flush_count += 1
+
+        # Subtract charged amount, preserving usage added while charge was in flight
+        self._total = max(0.0, self._total - quantity)
 
         result = StreamMeterFlushResult(
             success=charge_result.success,
@@ -265,15 +272,13 @@ class StreamMeter:
         Flush accumulated usage and charge the customer (async).
 
         If total is 0, returns a success result with no charge.
-        After flush, the meter resets to 0 and can be reused.
+        After flush, usage that was successfully charged is subtracted,
+        preserving any usage added concurrently during the charge call.
 
         Returns:
             The flush result including charge details.
         """
         quantity = self._total
-
-        # Reset total before charging to avoid double-counting on retry
-        self._total = 0
 
         # Nothing to charge
         if quantity == 0:
@@ -284,10 +289,12 @@ class StreamMeter:
                 is_duplicate=False,
             )
 
-        # Generate idempotency key for this flush
+        # Increment flush count BEFORE the charge call so that retries
+        # get a new idempotency key (same rationale as sync flush).
         idempotency_key = None
         if self._options.idempotency_key:
             idempotency_key = f"{self._options.idempotency_key}_flush_{self._flush_count}"
+        self._flush_count += 1
 
         # Charge the customer
         charge_result = self._charge_fn(
@@ -302,8 +309,13 @@ class StreamMeter:
         if hasattr(charge_result, "__await__"):
             charge_result = await charge_result
 
+        if not charge_result.success:
+            raise RuntimeError("StreamMeter flush failed: charge was not accepted")
+
         self._flushed = True
-        self._flush_count += 1
+
+        # Subtract charged amount, preserving usage added while charge was in flight
+        self._total = max(0.0, self._total - quantity)
 
         result = StreamMeterFlushResult(
             success=charge_result.success,

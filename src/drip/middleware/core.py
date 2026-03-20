@@ -11,6 +11,7 @@ import asyncio
 import logging
 import os
 import re
+from collections.abc import Mapping
 from typing import Any, TypeVar
 
 logger = logging.getLogger(__name__)
@@ -40,6 +41,105 @@ BILLING_IDENTITY_HEADERS: tuple[str, ...] = (
     "x-drip-customer-id",
     "x-customer-id",
 )
+
+BILLING_IDENTITY_QUERY_PARAMS: tuple[str, ...] = (
+    "customer_id",
+    "customerid",
+    "drip_customer_id",
+    "dripcustomerid",
+)
+
+
+class _SanitizedMapping(Mapping[str, Any]):
+    """Read-only mapping with blocked keys removed."""
+
+    def __init__(
+        self,
+        source: Any,
+        *,
+        blocked_keys: set[str],
+        case_insensitive_lookup: bool = False,
+    ) -> None:
+        self._case_insensitive_lookup = case_insensitive_lookup
+        self._items: list[tuple[str, Any]] = []
+        self._lookup: dict[str, Any] = {}
+        self._lists: dict[str, list[Any]] = {}
+
+        if source is None:
+            return
+
+        if hasattr(source, "multi_items"):
+            raw_items = list(source.multi_items())
+        elif hasattr(source, "items"):
+            raw_items = list(source.items())
+        else:
+            raw_items = list(dict(source).items())
+
+        for key, value in raw_items:
+            key_str = str(key)
+            normalized = key_str.lower()
+            if normalized in blocked_keys:
+                continue
+
+            self._items.append((key_str, value))
+
+            lookup_key = normalized if case_insensitive_lookup else key_str
+            self._lookup[lookup_key] = value
+            self._lists.setdefault(lookup_key, []).append(value)
+
+    def __getitem__(self, key: str) -> Any:
+        lookup_key = key.lower() if self._case_insensitive_lookup else key
+        return self._lookup[lookup_key]
+
+    def __iter__(self):
+        for key, _ in self._items:
+            yield key
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+    def get(self, key: str, default: Any = None) -> Any:  # type: ignore[override]
+        lookup_key = key.lower() if self._case_insensitive_lookup else key
+        return self._lookup.get(lookup_key, default)
+
+    def items(self):  # type: ignore[override]
+        return list(self._items)
+
+    def getlist(self, key: str) -> list[Any]:
+        lookup_key = key.lower() if self._case_insensitive_lookup else key
+        return list(self._lists.get(lookup_key, []))
+
+
+class _CustomerResolverRequestView:
+    """
+    Sanitized request view for customer resolver callbacks.
+
+    Security: strips client-controlled billing identity fields so resolver
+    implementations cannot accidentally trust spoofable values.
+    """
+
+    def __init__(self, request: Any) -> None:
+        self._request = request
+        self.headers = _SanitizedMapping(
+            getattr(request, "headers", {}),
+            blocked_keys=set(BILLING_IDENTITY_HEADERS),
+            case_insensitive_lookup=True,
+        )
+
+        if hasattr(request, "query_params"):
+            self.query_params = _SanitizedMapping(
+                getattr(request, "query_params", {}),
+                blocked_keys=set(BILLING_IDENTITY_QUERY_PARAMS),
+            )
+
+        if hasattr(request, "args"):
+            self.args = _SanitizedMapping(
+                getattr(request, "args", {}),
+                blocked_keys=set(BILLING_IDENTITY_QUERY_PARAMS),
+            )
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._request, name)
 
 
 # =============================================================================
@@ -206,6 +306,25 @@ def generate_payment_request(
 # =============================================================================
 
 
+def _normalize_resolved_customer_id(result: Any) -> str:
+    """Validate and normalize a customer ID returned by a resolver."""
+    if result is None:
+        raise DripMiddlewareError(
+            "Customer resolver returned no customer ID.",
+            DripMiddlewareErrorCode.CUSTOMER_RESOLUTION_FAILED,
+            status_code=400,
+        )
+
+    customer_id = str(result).strip()
+    if not customer_id:
+        raise DripMiddlewareError(
+            "Customer resolver returned an empty customer ID.",
+            DripMiddlewareErrorCode.CUSTOMER_RESOLUTION_FAILED,
+            status_code=400,
+        )
+    return customer_id
+
+
 def resolve_customer_id_sync(
     request: Any,
     config: DripMiddlewareConfig,
@@ -235,7 +354,8 @@ def resolve_customer_id_sync(
         )
 
     try:
-        result = resolver(request)
+        resolver_request = _CustomerResolverRequestView(request)
+        result = resolver(resolver_request)
         # Handle coroutines in sync context
         if asyncio.iscoroutine(result):
             raise DripMiddlewareError(
@@ -243,7 +363,7 @@ def resolve_customer_id_sync(
                 DripMiddlewareErrorCode.CONFIGURATION_ERROR,
                 status_code=500,
             )
-        return str(result)
+        return _normalize_resolved_customer_id(result)
     except DripMiddlewareError:
         raise
     except Exception as e:
@@ -284,10 +404,11 @@ async def resolve_customer_id_async(
         )
 
     try:
-        result = resolver(request)
+        resolver_request = _CustomerResolverRequestView(request)
+        result = resolver(resolver_request)
         if asyncio.iscoroutine(result):
             result = await result
-        return str(result)
+        return _normalize_resolved_customer_id(result)
     except DripMiddlewareError:
         raise
     except Exception as e:

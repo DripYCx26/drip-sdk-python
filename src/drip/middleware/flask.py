@@ -8,11 +8,20 @@ Example:
     >>> from flask import Flask, g
     >>> from drip.middleware.flask import drip_middleware, get_drip_context
     >>>
+    >>> def resolve_customer(request):
+    ...     # Must resolve from verified auth (JWT/session/API key lookup)
+    ...     session = verify_session(request.cookies.get("session"))
+    ...     return session["drip_customer_id"]
+    >>>
     >>> app = Flask(__name__)
     >>>
     >>> # Apply to specific routes
     >>> @app.route("/api/generate", methods=["POST"])
-    >>> @drip_middleware(meter="api_calls", quantity=1)
+    >>> @drip_middleware(
+    ...     meter="api_calls",
+    ...     quantity=1,
+    ...     customer_resolver=resolve_customer,
+    ... )
     >>> def generate():
     ...     drip = get_drip_context()
     ...     return {"charged": drip.charge.charge.amount_usdc}
