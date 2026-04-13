@@ -452,7 +452,7 @@ async with AsyncDrip(api_key="sk_test_...") as client:
 | `period_resets_at` | `str` | ISO timestamp for when the period resets |
 | `reason` | `str \| None` | Denial reason (only present when `allowed` is `False`) |
 
-> **Setup:** Entitlement plans, rules, and customer assignments are managed via the REST API. See the [Entitlements guide](../docs/integration/ENTITLEMENTS.md) for full API reference and setup walkthrough.
+> **Setup:** Entitlement plans, rules, and customer assignments are managed via the REST API. See the [Entitlements guide](../docs/integration/entitlements.md) for full API reference and setup walkthrough.
 
 ---
 

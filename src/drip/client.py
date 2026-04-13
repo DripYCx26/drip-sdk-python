@@ -3252,12 +3252,113 @@ class Drip:
         return CustomerPlanChange.model_validate(response)
 
     # =========================================================================
-    # Payload Mapping Engine — REMOVED
+    # Payload Mapping Engine
     # =========================================================================
-    # The payload-mapping routes (`/payload-mappings`, `/ingest/:slug`) are
-    # not implemented on the backend; every call returned 404 at runtime.
-    # Methods removed to stop exposing a non-functional surface. Revive
-    # when the backend ships the feature.
+
+    def create_payload_mapping(
+        self,
+        name: str,
+        source_name: str,
+        target_unit_type: str,
+        target_quantity_path: str,
+        target_customer_id_path: str,
+        *,
+        target_idempotency_path: str | None = None,
+        target_metadata_map: dict[str, str] | None = None,
+        target_action_name: str | None = None,
+        sample_input: dict[str, Any] | None = None,
+        transform_rules: dict[str, Any] | None = None,
+        is_active: bool = True,
+    ) -> dict[str, Any]:
+        """Create a payload mapping (custom JSON shape → canonical event).
+
+        Once created, your services can POST native payloads to
+        ``/v1/ingest/{source_name}`` and Drip walks them with restricted
+        JSONPath rules to produce a canonical usage event. Requires an
+        ``ADMIN`` secret key.
+        """
+        self._assert_secret_key("create_payload_mapping()")
+        body: dict[str, Any] = {
+            "name": name,
+            "sourceName": source_name,
+            "targetUnitType": target_unit_type,
+            "targetQuantityPath": target_quantity_path,
+            "targetCustomerIdPath": target_customer_id_path,
+            "isActive": is_active,
+        }
+        if target_idempotency_path is not None:
+            body["targetIdempotencyPath"] = target_idempotency_path
+        if target_metadata_map is not None:
+            body["targetMetadataMap"] = target_metadata_map
+        if target_action_name is not None:
+            body["targetActionName"] = target_action_name
+        if sample_input is not None:
+            body["sampleInput"] = sample_input
+        if transform_rules is not None:
+            body["transformRules"] = transform_rules
+        return self._post("/payload-mappings", json=body)
+
+    def list_payload_mappings(self) -> dict[str, Any]:
+        """List all payload mappings for the authenticated business."""
+        self._assert_secret_key("list_payload_mappings()")
+        return self._get("/payload-mappings")
+
+    def get_payload_mapping(self, mapping_id: str) -> dict[str, Any]:
+        """Get a single payload mapping by ID."""
+        self._assert_secret_key("get_payload_mapping()")
+        return self._get(f"/payload-mappings/{mapping_id}")
+
+    def update_payload_mapping(
+        self, mapping_id: str, **patch: Any
+    ) -> dict[str, Any]:
+        """Update a payload mapping. Appends an immutable version snapshot.
+
+        Pass camelCase field names (``targetQuantityPath=...``).
+        """
+        self._assert_secret_key("update_payload_mapping()")
+        return self._patch(f"/payload-mappings/{mapping_id}", json=patch)
+
+    def delete_payload_mapping(self, mapping_id: str) -> None:
+        """Delete a payload mapping."""
+        self._assert_secret_key("delete_payload_mapping()")
+        self._delete(f"/payload-mappings/{mapping_id}")
+
+    def list_payload_mapping_versions(self, mapping_id: str) -> dict[str, Any]:
+        """List historical version snapshots for a payload mapping."""
+        self._assert_secret_key("list_payload_mapping_versions()")
+        return self._get(f"/payload-mappings/{mapping_id}/versions")
+
+    def dry_run_payload_mapping(
+        self, mapping_id: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Dry-run a payload mapping against a sample payload.
+
+        Returns the canonical event Drip *would* record — no side effects.
+        """
+        self._assert_secret_key("dry_run_payload_mapping()")
+        return self._post(
+            f"/payload-mappings/{mapping_id}/dry-run",
+            json={"payload": payload},
+        )
+
+    def ingest_via_mapping(
+        self, source_name: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Ingest a raw payload via a named mapping.
+
+        Drip transforms the payload on the edge using the mapping's rules
+        and records a canonical usage event. Requires an ``OPERATOR`` (or
+        higher) secret key.
+
+        Example::
+
+            client.ingest_via_mapping("rpc-proxy", {
+                "request": {"method": "eth_call", "customer": "cus_abc", "id": "req-1"},
+                "usage":   {"compute_units": 17, "cache_hit": False},
+                "meta":    {"region": "us-east-1"},
+            })
+        """
+        return self._post(f"/ingest/{source_name}", json=payload)
 
 
 # =============================================================================
@@ -5240,6 +5341,80 @@ class AsyncDrip:
         return EntitlementCheckResult.model_validate(response)
 
     # =========================================================================
-    # Payload Mapping Engine — REMOVED
+    # Payload Mapping Engine
     # =========================================================================
-    # See note on the sync client above.
+
+    async def create_payload_mapping(
+        self,
+        name: str,
+        source_name: str,
+        target_unit_type: str,
+        target_quantity_path: str,
+        target_customer_id_path: str,
+        *,
+        target_idempotency_path: str | None = None,
+        target_metadata_map: dict[str, str] | None = None,
+        target_action_name: str | None = None,
+        sample_input: dict[str, Any] | None = None,
+        transform_rules: dict[str, Any] | None = None,
+        is_active: bool = True,
+    ) -> dict[str, Any]:
+        """Create a payload mapping. See ``Drip.create_payload_mapping``."""
+        self._assert_secret_key("create_payload_mapping()")
+        body: dict[str, Any] = {
+            "name": name,
+            "sourceName": source_name,
+            "targetUnitType": target_unit_type,
+            "targetQuantityPath": target_quantity_path,
+            "targetCustomerIdPath": target_customer_id_path,
+            "isActive": is_active,
+        }
+        if target_idempotency_path is not None:
+            body["targetIdempotencyPath"] = target_idempotency_path
+        if target_metadata_map is not None:
+            body["targetMetadataMap"] = target_metadata_map
+        if target_action_name is not None:
+            body["targetActionName"] = target_action_name
+        if sample_input is not None:
+            body["sampleInput"] = sample_input
+        if transform_rules is not None:
+            body["transformRules"] = transform_rules
+        return await self._post("/payload-mappings", json=body)
+
+    async def list_payload_mappings(self) -> dict[str, Any]:
+        self._assert_secret_key("list_payload_mappings()")
+        return await self._get("/payload-mappings")
+
+    async def get_payload_mapping(self, mapping_id: str) -> dict[str, Any]:
+        self._assert_secret_key("get_payload_mapping()")
+        return await self._get(f"/payload-mappings/{mapping_id}")
+
+    async def update_payload_mapping(
+        self, mapping_id: str, **patch: Any
+    ) -> dict[str, Any]:
+        self._assert_secret_key("update_payload_mapping()")
+        return await self._patch(f"/payload-mappings/{mapping_id}", json=patch)
+
+    async def delete_payload_mapping(self, mapping_id: str) -> None:
+        self._assert_secret_key("delete_payload_mapping()")
+        await self._delete(f"/payload-mappings/{mapping_id}")
+
+    async def list_payload_mapping_versions(
+        self, mapping_id: str
+    ) -> dict[str, Any]:
+        self._assert_secret_key("list_payload_mapping_versions()")
+        return await self._get(f"/payload-mappings/{mapping_id}/versions")
+
+    async def dry_run_payload_mapping(
+        self, mapping_id: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        self._assert_secret_key("dry_run_payload_mapping()")
+        return await self._post(
+            f"/payload-mappings/{mapping_id}/dry-run",
+            json={"payload": payload},
+        )
+
+    async def ingest_via_mapping(
+        self, source_name: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        return await self._post(f"/ingest/{source_name}", json=payload)
