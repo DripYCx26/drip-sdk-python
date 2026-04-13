@@ -38,23 +38,35 @@ client = Drip(api_key="sk_test_...")
 
 ## Billing Lifecycle
 
-Understanding `track_usage` vs `charge`:
+Everything flows through a single method: `track_usage()`. The `mode`
+parameter controls whether the backend creates a billable charge, queues
+it, or records the event for internal visibility only.
 
-| Method | What it does |
-|--------|--------------|
-| `track_usage()` | Logs usage to the ledger (no billing) |
-| `charge()` | Converts usage into a billable charge |
-| `create_subscription()` | Creates a recurring subscription (auto-bills on interval) |
+| Call | Endpoint | Semantics |
+| ---- | -------- | --------- |
+| `track_usage(...)` | `POST /usage` | Default. Billing-aware — creates a charge if a pricing plan matches the unit type |
+| `track_usage(..., mode="batch")` | `POST /usage/async` | High-throughput — queued, returns 202, charge created in background |
+| `track_usage(..., mode="internal")` | `POST /usage/internal` | Visibility-only — never bills |
+| `create_subscription()` | — | Recurring subscription (auto-bills on interval) |
+
+> **Migration note:** The old `charge()` and `charge_async()` methods were
+> removed (on both `Drip` and `AsyncDrip`). They were thin wrappers around
+> `POST /usage` and `POST /usage/async` that duplicated `track_usage`.
+> Replace `client.charge(...)` with `client.track_usage(...)` and
+> `client.charge_async(...)` with `client.track_usage(..., mode="batch")`.
+> `get_charge()` / `list_charges()` remain for read-only reconciliation.
 
 **Typical flow:**
 
-1. `track_usage()` throughout the day/request stream
+1. `track_usage()` throughout the day/request stream (hits `/usage`,
+   creates charges automatically when a pricing plan is configured)
 2. Optionally `estimate_from_usage()` to preview cost
-3. `charge()` to create billable charges
-4. `get_balance()` / `list_charges()` for reconciliation
-5. Webhooks for `charge.succeeded` / `charge.failed`
+3. `get_balance()` / `list_charges()` for reconciliation
+4. Webhooks for `charge.succeeded` / `charge.failed`
 
-> Most pilots start with `track_usage()` only. Add `charge()` when you're ready to bill.
+> Start pilots with `mode="internal"` during development. Drop the `mode`
+> arg (default = billing) once you've configured a pricing plan for your
+> unit type via `create_pricing_plan()`.
 
 ---
 
@@ -386,7 +398,7 @@ Contracts let you create per-customer commercial agreements with custom pricing,
 
 Check if a customer is allowed to use a feature **before** processing the request. This avoids wasting compute on customers who are over quota.
 
-Entitlement counters are automatically incremented when you call `charge()` — no extra work needed.
+Entitlement counters are automatically incremented when you call `track_usage()` in billing mode (default `mode="sync"`) — no extra work needed.
 
 ```python
 customer = client.create_customer(external_customer_id="user_123")
@@ -1014,9 +1026,9 @@ If you hit 429, back off and retry. The SDK handles this automatically with expo
 ### track_usage vs charge
 
 - `track_usage()` = logging (free, no balance impact)
-- `charge()` = billing (deducts from balance)
+- `track_usage()` (default mode) = billing (deducts from balance when pricing plan matches)
 
-Start with `track_usage()` during pilots. Add `charge()` when ready to bill.
+Start with `track_usage(mode="internal")` during pilots. Drop the `mode` arg (default = billing) when ready to bill.
 
 ### Development Mode
 
