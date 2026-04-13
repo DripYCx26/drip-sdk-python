@@ -812,6 +812,138 @@ class ListMetersResponse(BaseModel):
 
 
 # =============================================================================
+# Pricing Plan Models
+# =============================================================================
+
+
+class PricingModel(str, Enum):
+    """Supported pricing models."""
+
+    FLAT = "FLAT"
+    TIERED = "TIERED"
+    VOLUME = "VOLUME"
+    PACKAGE = "PACKAGE"
+    PER_SEAT = "PER_SEAT"
+
+
+class PricingTier(BaseModel):
+    """A pricing tier within a TIERED, VOLUME, or PACKAGE plan."""
+
+    id: str
+    min_quantity: str = Field(alias="minQuantity")
+    max_quantity: str | None = Field(alias="maxQuantity", default=None)
+    unit_price_usd: str = Field(alias="unitPriceUsd")
+    flat_fee_usd: str | None = Field(alias="flatFeeUsd", default=None)
+    package_size: int | None = Field(alias="packageSize", default=None)
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class PricingPlan(BaseModel):
+    """A full pricing plan record."""
+
+    id: str
+    name: str
+    unit_type: str = Field(alias="unitType")
+    unit_price_usd: str = Field(alias="unitPriceUsd")
+    currency: str
+    is_active: bool = Field(alias="isActive")
+    pricing_model: PricingModel = Field(alias="pricingModel")
+    tiers: list[PricingTier] = Field(default_factory=list)
+    created_at: str = Field(alias="createdAt")
+    updated_at: str = Field(alias="updatedAt")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class ListPricingPlansResponse(BaseModel):
+    """Response from listing pricing plans."""
+
+    data: list[PricingPlan]
+    count: int
+
+
+# =============================================================================
+# Withdrawal Models
+# =============================================================================
+
+
+class WithdrawalStatus(str, Enum):
+    """Status of a withdrawal."""
+
+    PENDING = "PENDING"
+    ONCHAIN_PENDING = "ONCHAIN_PENDING"
+    ONCHAIN_CONFIRMED = "ONCHAIN_CONFIRMED"
+    OFFRAMP_PENDING = "OFFRAMP_PENDING"
+    OFFRAMP_PROCESSING = "OFFRAMP_PROCESSING"
+    COMPLETE = "COMPLETE"
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
+
+
+class WithdrawalResult(BaseModel):
+    """Result of creating or retrieving a withdrawal."""
+
+    id: str
+    status: WithdrawalStatus
+    amount_usdc: str = Field(alias="amount_usdc")
+    fee_usdc: str = Field(alias="fee_usdc")
+    net_amount_usdc: str = Field(alias="net_amount_usdc")
+    fiat_currency: str = Field(alias="fiat_currency")
+    bank_description: str | None = Field(alias="bank_description", default=None)
+    created_at: str = Field(alias="created_at")
+    completed_at: str | None = Field(alias="completed_at", default=None)
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class WithdrawalFeeEstimate(BaseModel):
+    """Fee estimate for a withdrawal."""
+
+    amount_usdc: str = Field(alias="amount_usdc")
+    fee_usdc: str = Field(alias="fee_usdc")
+    net_amount_usdc: str = Field(alias="net_amount_usdc")
+    fee_bps: int = Field(alias="fee_bps")
+    fee_percent: str = Field(alias="fee_percent")
+    method: str
+    estimated_arrival: str = Field(alias="estimated_arrival")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class ListWithdrawalsResponse(BaseModel):
+    """Response from listing withdrawals."""
+
+    withdrawals: list[WithdrawalResult]
+    total: int
+
+
+class CancelWithdrawalResult(BaseModel):
+    """Result of cancelling a withdrawal."""
+
+    id: str
+    status: str
+    cancelled: bool
+
+
+# =============================================================================
+# Portal Session Models
+# =============================================================================
+
+
+class PortalSession(BaseModel):
+    """A portal session for customer dashboard access."""
+
+    id: str
+    token: str
+    customer_id: str = Field(alias="customerId")
+    expires_at: str = Field(alias="expiresAt")
+    url: str
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+# =============================================================================
 # x402 Payment Protocol Models
 # =============================================================================
 
@@ -1200,5 +1332,50 @@ class Contract(BaseModel):
     overrides: list[ContractPriceOverride] = Field(default_factory=list)
     created_at: str = Field(alias="createdAt")
     updated_at: str = Field(alias="updatedAt")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+# =============================================================================
+# Customer Plan Change Types
+# =============================================================================
+# Eliminates the need to grandfather customers on old plans. Every apply
+# method captures a full audit snapshot that can be rolled back.
+
+
+class CustomerPlanChange(BaseModel):
+    """A recorded pricing or entitlement change on a customer."""
+
+    id: str
+    business_id: str = Field(alias="businessId")
+    customer_id: str = Field(alias="customerId")
+    change_type: Literal["PRICING", "ENTITLEMENT", "BOTH"] = Field(alias="changeType")
+    status: Literal["APPLIED", "ROLLED_BACK", "SUPERSEDED"]
+    effective_from: str = Field(alias="effectiveFrom")
+    reason: str | None = None
+    previous_state: Any = Field(alias="previousState")
+    new_state: Any = Field(alias="newState")
+    proration_amount_usd: str | None = Field(alias="prorationAmountUsd", default=None)
+    proration_direction: Literal["NONE", "CREDIT", "CHARGE", "ZERO"] | None = Field(
+        alias="prorationDirection", default=None
+    )
+    prorated_days: int | None = Field(alias="proratedDays", default=None)
+    total_period_days: int | None = Field(alias="totalPeriodDays", default=None)
+    proration_period_start: str | None = Field(alias="prorationPeriodStart", default=None)
+    proration_period_end: str | None = Field(alias="prorationPeriodEnd", default=None)
+    proration_charge_id: str | None = Field(alias="prorationChargeId", default=None)
+    contract_id: str | None = Field(alias="contractId", default=None)
+    performed_by: str | None = Field(alias="performedBy", default=None)
+    created_at: str = Field(alias="createdAt")
+    updated_at: str = Field(alias="updatedAt")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class ListCustomerPlanChangesResponse(BaseModel):
+    """Response shape for list_customer_plan_changes."""
+
+    data: list[CustomerPlanChange]
+    total: int
 
     model_config = ConfigDict(populate_by_name=True)

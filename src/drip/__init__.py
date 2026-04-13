@@ -112,6 +112,7 @@ from .errors import (
 )
 from .models import (
     BalanceResult,
+    CancelWithdrawalResult,
     Charge,
     ChargeInfo,
     ChargeParams,
@@ -146,11 +147,17 @@ from .models import (
     CreateSubscriptionParams,
     ListCustomersResponse,
     ListMetersResponse,
+    ListPricingPlansResponse,
     ListSubscriptionsOptions,
     ListSubscriptionsResponse,
     ListWebhooksResponse,
+    ListWithdrawalsResponse,
     ListWorkflowsResponse,
     Meter,
+    PortalSession,
+    PricingModel,
+    PricingPlan,
+    PricingTier,
     ProductSurface,
     RecordRunEvent,
     RecordRunParams,
@@ -176,6 +183,9 @@ from .models import (
     Webhook,
     WebhookEventType,
     WebhookStats,
+    WithdrawalFeeEstimate,
+    WithdrawalResult,
+    WithdrawalStatus,
     Workflow,
     WrapApiCallResult,
     X402PaymentProof,
@@ -312,6 +322,19 @@ __all__ = [
     # Meter models
     "Meter",
     "ListMetersResponse",
+    # Pricing plan models
+    "PricingModel",
+    "PricingTier",
+    "PricingPlan",
+    "ListPricingPlansResponse",
+    # Withdrawal models
+    "WithdrawalStatus",
+    "WithdrawalResult",
+    "WithdrawalFeeEstimate",
+    "ListWithdrawalsResponse",
+    "CancelWithdrawalResult",
+    # Portal session models
+    "PortalSession",
     # x402 models
     "X402PaymentProof",
     "X402PaymentRequest",

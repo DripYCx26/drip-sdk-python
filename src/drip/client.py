@@ -1099,47 +1099,65 @@ class Drip:
     def charge(
         self,
         customer_id: str | None = None,
-        meter: str = "",
-        quantity: float = 0,
+        meter: str = "generic",
+        quantity: float = 1,
         idempotency_key: str | None = None,
         metadata: dict[str, Any] | None = None,
         *,
         user: str | None = None,
+        external_customer_id: str | None = None,
     ) -> ChargeResult:
         """
         Charge a customer for usage.
 
-        Pass ``user`` (your user ID) to auto-create and resolve the customer,
-        or ``customer_id`` if you already have the Drip ID.
+        Identifier options (one of):
+        - ``customer_id``: Drip customer ID you already hold.
+        - ``external_customer_id``: Your own database ID. The server
+          auto-provisions an internal Drip customer on first use — no extra
+          round-trip.
+        - ``user``: Legacy convenience — performs an eager ``POST /customers``
+          on the client side. Prefer ``external_customer_id`` for new code.
+
+        Minimum viable call — ``meter`` defaults to ``"generic"`` and
+        ``quantity`` defaults to ``1``.
 
         Args:
-            customer_id: Drip customer ID (use this OR ``user``).
-            meter: Usage meter type (e.g., "api_calls", "tokens", "compute_seconds").
-            quantity: Amount to charge.
+            customer_id: Drip customer ID.
+            meter: Usage meter type (e.g., "api_calls", "tokens"). Defaults to "generic".
+            quantity: Amount to charge. Defaults to 1.
             idempotency_key: Optional key to prevent duplicate charges.
             metadata: Optional metadata.
-            user: Your external user ID. Auto-creates customer on first use.
+            user: Legacy external user ID. Eagerly creates the customer on
+                the client side.
+            external_customer_id: Your database's customer ID, sent directly
+                to the server. Auto-provisioned on first use.
 
         Returns:
             ChargeResult with charge details.
 
         Example::
 
-            # Simplest — just your user ID, meter, and quantity
-            drip.charge(user="user_123", meter="api_calls", quantity=1)
+            # Zero-roundtrip: server maps your DB ID to a Drip customer
+            drip.charge(external_customer_id="user_123", meter="api_calls")
         """
         resolved_id = self._resolve_customer(user) if user else customer_id
-        if not resolved_id:
-            raise DripError("Either 'customer_id' or 'user' is required")
+        if not resolved_id and not external_customer_id:
+            raise DripError(
+                "Either 'customer_id', 'external_customer_id', or 'user' is required"
+            )
 
         body: dict[str, Any] = {
-            "customerId": resolved_id,
             "usageType": meter,
             "quantity": quantity,
         }
+        if resolved_id:
+            body["customerId"] = resolved_id
+        if external_customer_id:
+            body["externalCustomerId"] = external_customer_id
 
+        identity = resolved_id or external_customer_id or ""
         body["idempotencyKey"] = idempotency_key or _deterministic_idempotency_key(
-            "chg", resolved_id, meter, quantity
+            "chg", identity, meter, quantity
         )
         if metadata:
             body["metadata"] = metadata
@@ -1194,8 +1212,8 @@ class Drip:
     def track_usage(
         self,
         customer_id: str | None = None,
-        meter: str = "",
-        quantity: float = 0,
+        meter: str = "generic",
+        quantity: float = 1,
         idempotency_key: str | None = None,
         units: str | None = None,
         description: str | None = None,
@@ -1203,14 +1221,15 @@ class Drip:
         mode: Literal["batch"] = "batch",
         *,
         user: str | None = None,
+        external_customer_id: str | None = None,
     ) -> TrackUsageBatchResult: ...
 
     @overload
     def track_usage(
         self,
         customer_id: str | None = None,
-        meter: str = "",
-        quantity: float = 0,
+        meter: str = "generic",
+        quantity: float = 1,
         idempotency_key: str | None = None,
         units: str | None = None,
         description: str | None = None,
@@ -1218,13 +1237,14 @@ class Drip:
         mode: Literal["batch", "sync"] = "sync",
         *,
         user: str | None = None,
+        external_customer_id: str | None = None,
     ) -> TrackUsageResult: ...
 
     def track_usage(
         self,
         customer_id: str | None = None,
-        meter: str = "",
-        quantity: float = 0,
+        meter: str = "generic",
+        quantity: float = 1,
         idempotency_key: str | None = None,
         units: str | None = None,
         description: str | None = None,
@@ -1232,6 +1252,7 @@ class Drip:
         mode: Literal["batch", "sync"] = "sync",
         *,
         user: str | None = None,
+        external_customer_id: str | None = None,
     ) -> TrackUsageResult | TrackUsageBatchResult:
         """
         Record usage for internal visibility WITHOUT billing.
@@ -1240,10 +1261,15 @@ class Drip:
 
         For billing, use ``charge()`` instead.
 
+        Minimum viable call — ``meter`` defaults to ``"generic"`` and
+        ``quantity`` defaults to ``1``, so you can record a usage event
+        with just a customer identifier.
+
         Args:
             customer_id: Drip customer ID (use this OR ``user``).
             meter: Usage meter type (e.g., "api_calls", "tokens").
-            quantity: Amount to record.
+                Defaults to "generic".
+            quantity: Amount to record. Defaults to 1.
             idempotency_key: Optional key to prevent duplicate records.
             units: Optional unit label.
             description: Optional description.
@@ -1255,19 +1281,25 @@ class Drip:
             explicit batch mode.
         """
         resolved_id = self._resolve_customer(user) if user else customer_id
-        if not resolved_id:
-            raise DripError("Either 'customer_id' or 'user' is required")
+        if not resolved_id and not external_customer_id:
+            raise DripError(
+                "Either 'customer_id', 'external_customer_id', or 'user' is required"
+            )
         if mode not in ("batch", "sync"):
             raise DripError("mode must be 'batch' or 'sync'")
 
         body: dict[str, Any] = {
-            "customerId": resolved_id,
             "usageType": meter,
             "quantity": quantity,
         }
+        if resolved_id:
+            body["customerId"] = resolved_id
+        if external_customer_id:
+            body["externalCustomerId"] = external_customer_id
 
+        identity = resolved_id or external_customer_id or ""
         body["idempotencyKey"] = idempotency_key or _deterministic_idempotency_key(
-            "track", resolved_id, meter, quantity
+            "track", identity, meter, quantity
         )
         if units:
             body["units"] = units
@@ -1286,42 +1318,56 @@ class Drip:
     def charge_async(
         self,
         customer_id: str | None = None,
-        meter: str = "",
-        quantity: float = 0,
+        meter: str = "generic",
+        quantity: float = 1,
         idempotency_key: str | None = None,
         metadata: dict[str, Any] | None = None,
         *,
         user: str | None = None,
+        external_customer_id: str | None = None,
     ) -> ChargeAsyncResult:
         """
         Charge a customer asynchronously — returns immediately.
 
-        The charge is queued for background processing. Subscribe to
-        ``charge.succeeded`` / ``charge.failed`` webhooks for final status.
+        Identifier options (one of):
+        - ``customer_id``: Drip customer ID.
+        - ``external_customer_id``: Your database ID, auto-provisioned
+          server-side on first use.
+        - ``user``: Legacy client-side eager resolution.
+
+        Minimum viable call — ``meter`` defaults to ``"generic"`` and
+        ``quantity`` defaults to ``1``.
 
         Args:
-            customer_id: Drip customer ID (use this OR ``user``).
-            meter: Usage meter type (e.g., "api_calls", "tokens").
-            quantity: Amount to charge.
+            customer_id: Drip customer ID.
+            meter: Usage meter type. Defaults to "generic".
+            quantity: Amount to charge. Defaults to 1.
             idempotency_key: Optional key to prevent duplicate charges.
             metadata: Optional metadata.
-            user: Your external user ID. Auto-creates customer on first use.
+            user: Legacy external user ID (eager client-side creation).
+            external_customer_id: Your database's customer ID, sent directly.
 
         Returns:
             ChargeAsyncResult with queued charge details.
         """
         resolved_id = self._resolve_customer(user) if user else customer_id
-        if not resolved_id:
-            raise DripError("Either 'customer_id' or 'user' is required")
+        if not resolved_id and not external_customer_id:
+            raise DripError(
+                "Either 'customer_id', 'external_customer_id', or 'user' is required"
+            )
 
         body: dict[str, Any] = {
-            "customerId": resolved_id,
             "usageType": meter,
             "quantity": quantity,
         }
+        if resolved_id:
+            body["customerId"] = resolved_id
+        if external_customer_id:
+            body["externalCustomerId"] = external_customer_id
 
+        identity = resolved_id or external_customer_id or ""
         body["idempotencyKey"] = idempotency_key or _deterministic_idempotency_key(
-            "chg-async", resolved_id, meter, quantity
+            "chg-async", identity, meter, quantity
         )
         if metadata:
             body["metadata"] = metadata
@@ -1396,7 +1442,7 @@ class Drip:
     def wrap_api_call(
         self,
         customer_id: str | None = None,
-        meter: str = "",
+        meter: str = "generic",
         call: Callable[[], T] = None,  # type: ignore[assignment]
         extract_usage: Callable[[T], float] = None,  # type: ignore[assignment]
         idempotency_key: str | None = None,
@@ -1404,6 +1450,7 @@ class Drip:
         retry_options: RetryOptions | None = None,
         *,
         user: str | None = None,
+        external_customer_id: str | None = None,
     ) -> WrapApiCallResult:
         """
         Wraps an external API call with guaranteed usage recording.
@@ -1471,14 +1518,17 @@ class Drip:
             ... )
         """
         resolved_id = self._resolve_customer(user) if user else customer_id
-        if not resolved_id:
-            raise DripError("Either 'customer_id' or 'user' is required")
+        if not resolved_id and not external_customer_id:
+            raise DripError(
+                "Either 'customer_id', 'external_customer_id', or 'user' is required"
+            )
 
         # Generate idempotency key BEFORE the call - this is the key insight!
         # Even if we crash after the API call, retrying with the same key is safe.
         # Use deterministic key so retries produce the same key for deduplication.
+        identity = resolved_id or external_customer_id or ""
         key = idempotency_key or _deterministic_idempotency_key(
-            "wrap", resolved_id or "", meter, str(call)
+            "wrap", identity, meter, str(call)
         )
 
         # Step 1: Make the external API call (no retry - we don't control this)
@@ -1491,6 +1541,7 @@ class Drip:
         charge = _retry_with_backoff_sync(
             lambda: self.charge(
                 customer_id=resolved_id,
+                external_customer_id=external_customer_id,
                 meter=meter,
                 quantity=quantity,
                 idempotency_key=key,
@@ -2643,6 +2694,293 @@ class Drip:
         )
 
     # =========================================================================
+    # Pricing Plan Management
+    # =========================================================================
+
+    def create_pricing_plan(
+        self,
+        name: str,
+        unit_type: str,
+        unit_price_usd: float,
+        is_active: bool = True,
+        pricing_model: str = "FLAT",
+        tiers: list[dict[str, Any]] | None = None,
+    ) -> "PricingPlan":
+        """
+        Create a new pricing plan for a usage type.
+
+        Each unit_type can only have one active plan. To change prices, use
+        update_pricing_plan() (which creates a new version) or deactivate the
+        existing plan first.
+
+        Args:
+            name: Human-readable plan name.
+            unit_type: Usage type this plan prices (e.g., "api_call", "token").
+            unit_price_usd: Price per unit in USD (max 6 decimal places).
+            is_active: Whether this plan is active (default: True).
+            pricing_model: One of FLAT, TIERED, VOLUME, PACKAGE, PER_SEAT.
+            tiers: Pricing tiers (required for TIERED/VOLUME/PACKAGE).
+
+        Returns:
+            The created PricingPlan.
+        """
+        from .models import PricingPlan as PricingPlanModel
+
+        self._assert_secret_key("create_pricing_plan")
+        body: dict[str, Any] = {
+            "name": name,
+            "unitType": unit_type,
+            "unitPriceUsd": unit_price_usd,
+            "isActive": is_active,
+            "pricingModel": pricing_model,
+        }
+        if tiers is not None:
+            body["tiers"] = tiers
+
+        response = self._post("/pricing-plans", json=body)
+        return PricingPlanModel.model_validate(response)
+
+    def get_pricing_plan(self, plan_id: str) -> "PricingPlan":
+        """
+        Retrieve a pricing plan by ID (includes tiers).
+
+        Args:
+            plan_id: The pricing plan ID.
+
+        Returns:
+            The PricingPlan with full details.
+        """
+        from .models import PricingPlan as PricingPlanModel
+
+        self._assert_secret_key("get_pricing_plan")
+        response = self._get(f"/pricing-plans/{plan_id}")
+        return PricingPlanModel.model_validate(response)
+
+    def list_pricing_plans(self) -> "ListPricingPlansResponse":
+        """
+        List all pricing plans including tiers and pricing models.
+
+        Unlike list_meters() (simplified view), returns full plan details.
+
+        Returns:
+            List of pricing plans with full details.
+        """
+        from .models import ListPricingPlansResponse
+
+        self._assert_secret_key("list_pricing_plans")
+        response = self._get("/pricing-plans")
+        return ListPricingPlansResponse.model_validate(response)
+
+    def update_pricing_plan(
+        self,
+        plan_id: str,
+        name: str | None = None,
+        unit_price_usd: float | None = None,
+        is_active: bool | None = None,
+        pricing_model: str | None = None,
+        tiers: list[dict[str, Any]] | None = _UNSET,
+    ) -> "PricingPlan":
+        """
+        Update a pricing plan. Price changes create a new version.
+
+        Args:
+            plan_id: The pricing plan ID.
+            name: Updated plan name.
+            unit_price_usd: Updated price per unit in USD.
+            is_active: Enable or disable the plan.
+            pricing_model: Change pricing model.
+            tiers: Replace plan tiers.
+
+        Returns:
+            The updated PricingPlan.
+        """
+        from .models import PricingPlan as PricingPlanModel
+
+        self._assert_secret_key("update_pricing_plan")
+        body: dict[str, Any] = {}
+        if name is not None:
+            body["name"] = name
+        if unit_price_usd is not None:
+            body["unitPriceUsd"] = unit_price_usd
+        if is_active is not None:
+            body["isActive"] = is_active
+        if pricing_model is not None:
+            body["pricingModel"] = pricing_model
+        if tiers is not _UNSET:
+            body["tiers"] = tiers
+
+        response = self._patch(f"/pricing-plans/{plan_id}", json=body)
+        return PricingPlanModel.model_validate(response)
+
+    def delete_pricing_plan(self, plan_id: str) -> None:
+        """
+        Soft-delete a pricing plan by deactivating it.
+
+        Args:
+            plan_id: The pricing plan ID.
+        """
+        self._assert_secret_key("delete_pricing_plan")
+        self._delete(f"/pricing-plans/{plan_id}")
+
+    def get_pricing_plan_by_type(self, unit_type: str) -> "PricingPlan":
+        """
+        Look up the active pricing plan for a usage type.
+
+        Args:
+            unit_type: The usage type (e.g., "api_call", "token").
+
+        Returns:
+            The active PricingPlan for this unit type.
+        """
+        from .models import PricingPlan as PricingPlanModel
+
+        self._assert_secret_key("get_pricing_plan_by_type")
+        response = self._get(f"/pricing-plans/by-type/{unit_type}")
+        return PricingPlanModel.model_validate(response)
+
+    # =========================================================================
+    # Withdrawals (Fiat Off-Ramp)
+    # =========================================================================
+
+    def withdraw(
+        self,
+        amount_usdc: str,
+        idempotency_key: str,
+        bank_description: str | None = None,
+    ) -> "WithdrawalResult":
+        """
+        Create a withdrawal to convert USDC to fiat (bank transfer).
+
+        Args:
+            amount_usdc: Amount in USDC (e.g., "500.00"). Min $10, max $100,000.
+            idempotency_key: Idempotency key for safe retries.
+            bank_description: Optional bank description.
+
+        Returns:
+            WithdrawalResult with fee breakdown.
+        """
+        from .models import WithdrawalResult
+
+        self._assert_secret_key("withdraw")
+        body: dict[str, Any] = {
+            "amount_usdc": amount_usdc,
+            "idempotency_key": idempotency_key,
+        }
+        if bank_description is not None:
+            body["bank_description"] = bank_description
+
+        response = self._post("/withdrawals", json=body)
+        return WithdrawalResult.model_validate(response)
+
+    def list_withdrawals(
+        self,
+        status: str | None = None,
+        limit: int | None = None,
+        offset: int | None = None,
+    ) -> "ListWithdrawalsResponse":
+        """
+        List withdrawals for your business.
+
+        Args:
+            status: Filter by status (PENDING, COMPLETE, FAILED, etc.).
+            limit: Maximum number of results.
+            offset: Pagination offset.
+
+        Returns:
+            ListWithdrawalsResponse with withdrawals and total count.
+        """
+        from .models import ListWithdrawalsResponse
+
+        self._assert_secret_key("list_withdrawals")
+        params: dict[str, Any] = {}
+        if status is not None:
+            params["status"] = status
+        if limit is not None:
+            params["limit"] = limit
+        if offset is not None:
+            params["offset"] = offset
+
+        response = self._get("/withdrawals", params=params or None)
+        return ListWithdrawalsResponse.model_validate(response)
+
+    def estimate_withdrawal_fee(self, amount_usdc: str) -> "WithdrawalFeeEstimate":
+        """
+        Get a fee estimate for a withdrawal amount.
+
+        Args:
+            amount_usdc: Amount in USDC to estimate (e.g., "1000.00").
+
+        Returns:
+            WithdrawalFeeEstimate with fee breakdown and estimated arrival.
+        """
+        from .models import WithdrawalFeeEstimate
+
+        self._assert_secret_key("estimate_withdrawal_fee")
+        response = self._get(
+            "/withdrawals/fee-estimate",
+            params={"amount_usdc": amount_usdc},
+        )
+        return WithdrawalFeeEstimate.model_validate(response)
+
+    def cancel_withdrawal(self, withdrawal_id: str) -> "CancelWithdrawalResult":
+        """
+        Cancel a pending withdrawal (before on-chain processing begins).
+
+        Args:
+            withdrawal_id: The withdrawal ID to cancel.
+
+        Returns:
+            CancelWithdrawalResult with cancellation status.
+        """
+        from .models import CancelWithdrawalResult
+
+        self._assert_secret_key("cancel_withdrawal")
+        response = self._delete(f"/withdrawals/{withdrawal_id}")
+        return CancelWithdrawalResult.model_validate(response)
+
+    # =========================================================================
+    # Portal Sessions
+    # =========================================================================
+
+    def create_portal_session(
+        self,
+        customer_id: str,
+        expires_in_minutes: int | None = None,
+    ) -> "PortalSession":
+        """
+        Create a portal session for customer dashboard access.
+
+        Args:
+            customer_id: The customer ID (internal or external).
+            expires_in_minutes: Link validity (5-1440 min, default: 60).
+
+        Returns:
+            PortalSession with token and URL.
+        """
+        from .models import PortalSession
+
+        self._assert_secret_key("create_portal_session")
+        body: dict[str, Any] = {"customerId": customer_id}
+        if expires_in_minutes is not None:
+            body["expiresInMinutes"] = expires_in_minutes
+
+        response = self._post("/portal-sessions", json=body)
+        return PortalSession.model_validate(response)
+
+    def revoke_portal_session(self, session_id: str) -> dict[str, Any]:
+        """
+        Revoke a portal session, invalidating the token immediately.
+
+        Args:
+            session_id: The portal session ID to revoke.
+
+        Returns:
+            Dict with success status.
+        """
+        self._assert_secret_key("revoke_portal_session")
+        return self._delete(f"/portal-sessions/{session_id}")
+
+    # =========================================================================
     # Static Utility Methods
     # =========================================================================
 
@@ -2786,6 +3124,394 @@ class Drip:
 
         response = self._post("/entitlements/check", json=body)
         return EntitlementCheckResult.model_validate(response)
+
+    # =========================================================================
+    # Customer Plan Changes
+    # =========================================================================
+    # Change a single customer's pricing or entitlements without creating
+    # new global plans or grandfathering old ones. Every apply call captures
+    # a full audit snapshot that can be rolled back.
+
+    def apply_customer_pricing_change(
+        self,
+        customer_id: str,
+        *,
+        source_pricing_plan_ids: list[str] | None = None,
+        price_overrides: list[dict[str, str]] | None = None,
+        replace_all: bool = False,
+        discount_pct: str | None = None,
+        minimum_usdc: str | None = None,
+        maximum_usdc: str | None = None,
+        included_units: dict[str, int] | None = None,
+        prorate: bool = False,
+        proration_amount_override: str | None = None,
+        effective_date: str | None = None,
+        reason: str | None = None,
+        performed_by: str | None = None,
+    ) -> "CustomerPlanChange":
+        """
+        Change a single customer's pricing without creating a new global plan.
+
+        Provide any combination of `source_pricing_plan_ids` (copy prices
+        from those plans onto the customer's contract as overrides),
+        explicit `price_overrides`, and commercial terms
+        (`discount_pct`, `minimum_usdc`, `maximum_usdc`). At least one
+        field is required.
+
+        Args:
+            customer_id: The Drip customer ID.
+            source_pricing_plan_ids: IDs of pricing plans whose unit prices
+                will be copied onto this customer's contract.
+            price_overrides: Explicit `[{"unitType": "...", "unitPriceUsd": "..."}, ...]`.
+                Merged with `source_pricing_plan_ids`; explicit wins.
+            replace_all: When True, wipe existing overrides before applying.
+            discount_pct: Blanket discount percentage (e.g. "15").
+            minimum_usdc: Minimum spend per period (USDC).
+            maximum_usdc: Maximum spend per period (USDC).
+            included_units: Free units per period (e.g. `{"api_call": 10000}`).
+            prorate: Compute proration against current subscription period.
+            proration_amount_override: Exact net proration amount (signed
+                string; positive=CHARGE, negative=CREDIT, "0"=ZERO) to use
+                instead of the subscription-delta heuristic. Preferred for
+                multi-unit changes.
+            effective_date: ISO 8601. v1 applies immediately regardless.
+            reason: Free-form reason written to the audit row.
+            performed_by: Actor identifier written to the audit row.
+
+        Returns:
+            The CustomerPlanChange row with audit snapshots and optional
+            proration details.
+
+        Example:
+            >>> change = client.apply_customer_pricing_change(
+            ...     "cust_123",
+            ...     source_pricing_plan_ids=["plan_pro_api"],
+            ...     discount_pct="15",
+            ...     prorate=True,
+            ...     reason="Upgraded after sales call",
+            ... )
+            >>> print(change.id, change.proration_direction)
+        """
+        from .models import CustomerPlanChange
+
+        body: dict[str, Any] = {}
+        if source_pricing_plan_ids is not None:
+            body["sourcePricingPlanIds"] = source_pricing_plan_ids
+        if price_overrides is not None:
+            body["priceOverrides"] = price_overrides
+        if replace_all:
+            body["replaceAll"] = True
+        if discount_pct is not None:
+            body["discountPct"] = discount_pct
+        if minimum_usdc is not None:
+            body["minimumUsdc"] = minimum_usdc
+        if maximum_usdc is not None:
+            body["maximumUsdc"] = maximum_usdc
+        if included_units is not None:
+            body["includedUnits"] = included_units
+        if prorate:
+            body["prorate"] = True
+        if proration_amount_override is not None:
+            body["prorationAmountOverride"] = proration_amount_override
+        if effective_date is not None:
+            body["effectiveDate"] = effective_date
+        if reason is not None:
+            body["reason"] = reason
+        if performed_by is not None:
+            body["performedBy"] = performed_by
+
+        response = self._post(
+            f"/customers/{customer_id}/plan-changes/pricing",
+            json=body,
+        )
+        return CustomerPlanChange.model_validate(response)
+
+    def apply_customer_entitlement_change(
+        self,
+        customer_id: str,
+        plan_id: str,
+        *,
+        overrides: dict[str, dict[str, Any]] | None = None,
+        reason: str | None = None,
+        performed_by: str | None = None,
+    ) -> "CustomerPlanChange":
+        """
+        Change a single customer's entitlement plan (and optionally set
+        per-feature overrides) without grandfathering.
+
+        Args:
+            customer_id: The Drip customer ID.
+            plan_id: Target entitlement plan ID.
+            overrides: Per-feature overrides,
+                e.g. ``{"search": {"dailyLimit": 10000}, "api": {"unlimited": True}}``.
+            reason: Free-form reason written to the audit row.
+            performed_by: Actor identifier written to the audit row.
+
+        Returns:
+            The CustomerPlanChange row.
+
+        Example:
+            >>> client.apply_customer_entitlement_change(
+            ...     "cust_123",
+            ...     "plan_pro",
+            ...     overrides={"search": {"dailyLimit": 10000}},
+            ...     reason="Upgraded tier",
+            ... )
+        """
+        from .models import CustomerPlanChange
+
+        body: dict[str, Any] = {"planId": plan_id}
+        if overrides is not None:
+            body["overrides"] = overrides
+        if reason is not None:
+            body["reason"] = reason
+        if performed_by is not None:
+            body["performedBy"] = performed_by
+
+        response = self._post(
+            f"/customers/{customer_id}/plan-changes/entitlement",
+            json=body,
+        )
+        return CustomerPlanChange.model_validate(response)
+
+    def list_customer_plan_changes(
+        self,
+        customer_id: str,
+        *,
+        limit: int | None = None,
+        offset: int | None = None,
+    ) -> "ListCustomerPlanChangesResponse":
+        """
+        List the paginated history of pricing + entitlement changes for a
+        customer, newest first.
+        """
+        from .models import ListCustomerPlanChangesResponse
+
+        params: dict[str, Any] = {}
+        if limit is not None:
+            params["limit"] = limit
+        if offset is not None:
+            params["offset"] = offset
+
+        response = self._get(
+            f"/customers/{customer_id}/plan-changes",
+            params=params if params else None,
+        )
+        return ListCustomerPlanChangesResponse.model_validate(response)
+
+    def get_customer_plan_change(
+        self,
+        customer_id: str,
+        change_id: str,
+    ) -> "CustomerPlanChange":
+        """Retrieve a single plan change by ID."""
+        from .models import CustomerPlanChange
+
+        response = self._get(
+            f"/customers/{customer_id}/plan-changes/{change_id}",
+        )
+        return CustomerPlanChange.model_validate(response)
+
+    def rollback_customer_plan_change(
+        self,
+        customer_id: str,
+        change_id: str,
+        *,
+        performed_by: str | None = None,
+    ) -> "CustomerPlanChange":
+        """
+        Roll back a plan change, restoring the previous state and writing
+        an inverse change row to the history for auditability.
+
+        Args:
+            customer_id: The Drip customer ID.
+            change_id: The CustomerPlanChange ID to roll back.
+            performed_by: Actor identifier written to the audit row.
+
+        Returns:
+            The newly created inverse CustomerPlanChange row.
+        """
+        from .models import CustomerPlanChange
+
+        body: dict[str, Any] = {}
+        if performed_by is not None:
+            body["performedBy"] = performed_by
+
+        response = self._post(
+            f"/customers/{customer_id}/plan-changes/{change_id}/rollback",
+            json=body,
+        )
+        return CustomerPlanChange.model_validate(response)
+
+    # =========================================================================
+    # Payload Mapping Engine
+    # =========================================================================
+
+    def create_payload_mapping(
+        self,
+        name: str,
+        source_name: str,
+        target_unit_type: str,
+        target_quantity_path: str,
+        target_customer_id_path: str,
+        *,
+        target_idempotency_path: str | None = None,
+        target_metadata_map: dict[str, str] | None = None,
+        target_action_name: str | None = None,
+        sample_input: dict[str, Any] | None = None,
+        transform_rules: dict[str, Any] | None = None,
+        is_active: bool = True,
+    ) -> dict[str, Any]:
+        """
+        Create a payload mapping that transforms arbitrary JSON into Drip's
+        canonical usage event shape.
+
+        Once created, your services can POST their native payloads to
+        ``/v1/ingest/{source_name}`` without any SDK code changes. The mapping
+        engine walks the payload using restricted JSONPath expressions and
+        produces a canonical event.
+
+        Requires a secret key (``sk_*``) with the ``ADMIN`` role.
+
+        Args:
+            name: Human-readable name.
+            source_name: URL-safe slug, unique per business. Used as
+                ``:mappingSlug`` in the ingest path.
+            target_unit_type: The canonical ``usageType`` to emit.
+            target_quantity_path: JSONPath expression resolving to a numeric
+                quantity (e.g. ``"$.usage.compute_units"``).
+            target_customer_id_path: JSONPath expression resolving to a Drip
+                customer ID (e.g. ``"$.request.customer"``).
+            target_idempotency_path: Optional path for the idempotency key.
+                When omitted or unresolved, Drip auto-generates a fallback.
+            target_metadata_map: Map of metadata key → JSONPath expression.
+            target_action_name: Optional literal ``actionName`` applied to
+                every transformed event.
+            sample_input: Optional sample payload stored alongside the
+                mapping for UI previews.
+            transform_rules: Reserved for future transform DSL extensions.
+            is_active: Inactive mappings return 410 from the ingest path.
+
+        Returns:
+            The created payload mapping.
+
+        Example:
+            >>> mapping = client.create_payload_mapping(
+            ...     name="RPC Proxy Compute Units",
+            ...     source_name="rpc-proxy",
+            ...     target_unit_type="eth_call_compute",
+            ...     target_quantity_path="$.usage.compute_units",
+            ...     target_customer_id_path="$.request.customer",
+            ...     target_idempotency_path="$.request.id",
+            ...     target_metadata_map={"region": "$.meta.region"},
+            ... )
+        """
+        self._assert_secret_key("create_payload_mapping()")
+        body: dict[str, Any] = {
+            "name": name,
+            "sourceName": source_name,
+            "targetUnitType": target_unit_type,
+            "targetQuantityPath": target_quantity_path,
+            "targetCustomerIdPath": target_customer_id_path,
+            "isActive": is_active,
+        }
+        if target_idempotency_path is not None:
+            body["targetIdempotencyPath"] = target_idempotency_path
+        if target_metadata_map is not None:
+            body["targetMetadataMap"] = target_metadata_map
+        if target_action_name is not None:
+            body["targetActionName"] = target_action_name
+        if sample_input is not None:
+            body["sampleInput"] = sample_input
+        if transform_rules is not None:
+            body["transformRules"] = transform_rules
+
+        return self._post("/payload-mappings", json=body)
+
+    def list_payload_mappings(self) -> dict[str, Any]:
+        """
+        List all payload mappings for the authenticated business.
+
+        Requires a secret key (``sk_*``) with the ``ADMIN`` role.
+        """
+        self._assert_secret_key("list_payload_mappings()")
+        return self._get("/payload-mappings")
+
+    def get_payload_mapping(self, mapping_id: str) -> dict[str, Any]:
+        """
+        Get a single payload mapping by ID.
+
+        Requires a secret key (``sk_*``) with the ``ADMIN`` role.
+        """
+        self._assert_secret_key("get_payload_mapping()")
+        return self._get(f"/payload-mappings/{mapping_id}")
+
+    def update_payload_mapping(
+        self, mapping_id: str, **patch: Any
+    ) -> dict[str, Any]:
+        """
+        Update a payload mapping. Each update appends a new immutable
+        snapshot to ``PayloadMappingVersion`` for rollback.
+
+        Requires a secret key (``sk_*``) with the ``ADMIN`` role.
+
+        Pass the same camelCase field names accepted by
+        ``create_payload_mapping`` (e.g. ``targetQuantityPath=...``).
+        """
+        self._assert_secret_key("update_payload_mapping()")
+        return self._patch(f"/payload-mappings/{mapping_id}", json=patch)
+
+    def delete_payload_mapping(self, mapping_id: str) -> None:
+        """
+        Delete a payload mapping.
+
+        Requires a secret key (``sk_*``) with the ``ADMIN`` role.
+        """
+        self._assert_secret_key("delete_payload_mapping()")
+        self._delete(f"/payload-mappings/{mapping_id}")
+
+    def list_payload_mapping_versions(self, mapping_id: str) -> dict[str, Any]:
+        """
+        List historical version snapshots for a payload mapping.
+
+        Requires a secret key (``sk_*``) with the ``ADMIN`` role.
+        """
+        self._assert_secret_key("list_payload_mapping_versions()")
+        return self._get(f"/payload-mappings/{mapping_id}/versions")
+
+    def dry_run_payload_mapping(
+        self, mapping_id: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        """
+        Dry-run a payload mapping against a sample payload. Returns the
+        transformed event Drip *would* record — no side effects.
+
+        Requires a secret key (``sk_*``) with the ``ADMIN`` role.
+        """
+        self._assert_secret_key("dry_run_payload_mapping()")
+        return self._post(
+            f"/payload-mappings/{mapping_id}/dry-run",
+            json={"payload": payload},
+        )
+
+    def ingest_via_mapping(
+        self, mapping_slug: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        """
+        Ingest a raw payload via a named payload mapping. The payload is
+        transformed on the edge using the mapping's rules and recorded as
+        an event. The raw body is also persisted to the payload blob store.
+
+        Requires a secret key (``sk_*``) with the ``OPERATOR`` role or higher.
+
+        Example:
+            >>> result = client.ingest_via_mapping("rpc-proxy", {
+            ...     "request":  {"method": "eth_call", "customer": "cus_abc", "id": "req-1"},
+            ...     "usage":    {"compute_units": 17, "cache_hit": False},
+            ...     "meta":     {"region": "us-east-1"},
+            ... })
+        """
+        return self._post(f"/ingest/{mapping_slug}", json=payload)
 
 
 # =============================================================================
@@ -3409,35 +4135,45 @@ class AsyncDrip:
     async def charge(
         self,
         customer_id: str | None = None,
-        meter: str = "",
-        quantity: float = 0,
+        meter: str = "generic",
+        quantity: float = 1,
         idempotency_key: str | None = None,
         metadata: dict[str, Any] | None = None,
         *,
         user: str | None = None,
+        external_customer_id: str | None = None,
     ) -> ChargeResult:
         """
         Charge a customer for usage.
 
-        Pass ``user`` (your user ID) to auto-create and resolve the customer,
-        or ``customer_id`` if you already have the Drip ID.
+        Identifier options (one of):
+        - ``customer_id``: Drip customer ID.
+        - ``external_customer_id``: Your database's customer ID, sent
+          directly to the server. Auto-provisioned on first use.
+        - ``user``: Legacy eager client-side resolution via ``POST /customers``.
 
         Example::
 
-            await drip.charge(user="user_123", meter="api_calls", quantity=1)
+            await drip.charge(external_customer_id="user_123", meter="api_calls")
         """
         resolved_id = (await self._resolve_customer(user)) if user else customer_id
-        if not resolved_id:
-            raise DripError("Either 'customer_id' or 'user' is required")
+        if not resolved_id and not external_customer_id:
+            raise DripError(
+                "Either 'customer_id', 'external_customer_id', or 'user' is required"
+            )
 
         body: dict[str, Any] = {
-            "customerId": resolved_id,
             "usageType": meter,
             "quantity": quantity,
         }
+        if resolved_id:
+            body["customerId"] = resolved_id
+        if external_customer_id:
+            body["externalCustomerId"] = external_customer_id
 
+        identity = resolved_id or external_customer_id or ""
         body["idempotencyKey"] = idempotency_key or _deterministic_idempotency_key(
-            "chg", resolved_id, meter, quantity
+            "chg", identity, meter, quantity
         )
         if metadata:
             body["metadata"] = metadata
@@ -3473,8 +4209,8 @@ class AsyncDrip:
     async def track_usage(
         self,
         customer_id: str | None = None,
-        meter: str = "",
-        quantity: float = 0,
+        meter: str = "generic",
+        quantity: float = 1,
         idempotency_key: str | None = None,
         units: str | None = None,
         description: str | None = None,
@@ -3482,14 +4218,15 @@ class AsyncDrip:
         mode: Literal["batch"] = "batch",
         *,
         user: str | None = None,
+        external_customer_id: str | None = None,
     ) -> TrackUsageBatchResult: ...
 
     @overload
     async def track_usage(
         self,
         customer_id: str | None = None,
-        meter: str = "",
-        quantity: float = 0,
+        meter: str = "generic",
+        quantity: float = 1,
         idempotency_key: str | None = None,
         units: str | None = None,
         description: str | None = None,
@@ -3497,13 +4234,14 @@ class AsyncDrip:
         mode: Literal["batch", "sync"] = "sync",
         *,
         user: str | None = None,
+        external_customer_id: str | None = None,
     ) -> TrackUsageResult: ...
 
     async def track_usage(
         self,
         customer_id: str | None = None,
-        meter: str = "",
-        quantity: float = 0,
+        meter: str = "generic",
+        quantity: float = 1,
         idempotency_key: str | None = None,
         units: str | None = None,
         description: str | None = None,
@@ -3511,27 +4249,38 @@ class AsyncDrip:
         mode: Literal["batch", "sync"] = "sync",
         *,
         user: str | None = None,
+        external_customer_id: str | None = None,
     ) -> TrackUsageResult | TrackUsageBatchResult:
         """
         Record usage for internal visibility WITHOUT billing.
 
-        Pass ``user`` (your user ID) or ``customer_id``.
+        Accepts ``customer_id``, ``external_customer_id`` (direct server-side
+        resolution), or legacy ``user`` (client-side eager create).
         For billing, use ``charge()`` instead.
+
+        Minimum viable call — ``meter`` defaults to ``"generic"`` and
+        ``quantity`` defaults to ``1``.
         """
         resolved_id = (await self._resolve_customer(user)) if user else customer_id
-        if not resolved_id:
-            raise DripError("Either 'customer_id' or 'user' is required")
+        if not resolved_id and not external_customer_id:
+            raise DripError(
+                "Either 'customer_id', 'external_customer_id', or 'user' is required"
+            )
         if mode not in ("batch", "sync"):
             raise DripError("mode must be 'batch' or 'sync'")
 
         body: dict[str, Any] = {
-            "customerId": resolved_id,
             "usageType": meter,
             "quantity": quantity,
         }
+        if resolved_id:
+            body["customerId"] = resolved_id
+        if external_customer_id:
+            body["externalCustomerId"] = external_customer_id
 
+        identity = resolved_id or external_customer_id or ""
         body["idempotencyKey"] = idempotency_key or _deterministic_idempotency_key(
-            "track", resolved_id, meter, quantity
+            "track", identity, meter, quantity
         )
         if units:
             body["units"] = units
@@ -3550,31 +4299,41 @@ class AsyncDrip:
     async def charge_async(
         self,
         customer_id: str | None = None,
-        meter: str = "",
-        quantity: float = 0,
+        meter: str = "generic",
+        quantity: float = 1,
         idempotency_key: str | None = None,
         metadata: dict[str, Any] | None = None,
         *,
         user: str | None = None,
+        external_customer_id: str | None = None,
     ) -> ChargeAsyncResult:
         """
         Charge a customer asynchronously — returns immediately.
+
+        Accepts ``customer_id``, ``external_customer_id`` (direct server-side
+        auto-provisioning), or legacy ``user``.
 
         The charge is queued for background processing. Subscribe to
         ``charge.succeeded`` / ``charge.failed`` webhooks for final status.
         """
         resolved_id = (await self._resolve_customer(user)) if user else customer_id
-        if not resolved_id:
-            raise DripError("Either 'customer_id' or 'user' is required")
+        if not resolved_id and not external_customer_id:
+            raise DripError(
+                "Either 'customer_id', 'external_customer_id', or 'user' is required"
+            )
 
         body: dict[str, Any] = {
-            "customerId": resolved_id,
             "usageType": meter,
             "quantity": quantity,
         }
+        if resolved_id:
+            body["customerId"] = resolved_id
+        if external_customer_id:
+            body["externalCustomerId"] = external_customer_id
 
+        identity = resolved_id or external_customer_id or ""
         body["idempotencyKey"] = idempotency_key or _deterministic_idempotency_key(
-            "chg-async", resolved_id, meter, quantity
+            "chg-async", identity, meter, quantity
         )
         if metadata:
             body["metadata"] = metadata
@@ -3618,7 +4377,7 @@ class AsyncDrip:
     async def wrap_api_call(
         self,
         customer_id: str | None = None,
-        meter: str = "",
+        meter: str = "generic",
         call: Callable[[], Any] = None,  # type: ignore[assignment]
         extract_usage: Callable[[Any], float] = None,  # type: ignore[assignment]
         idempotency_key: str | None = None,
@@ -3626,28 +4385,33 @@ class AsyncDrip:
         retry_options: RetryOptions | None = None,
         *,
         user: str | None = None,
+        external_customer_id: str | None = None,
     ) -> WrapApiCallResult:
         """
         Wraps an external async API call with guaranteed usage recording.
 
-        Pass ``user`` (your user ID) or ``customer_id``.
+        Accepts ``customer_id``, ``external_customer_id`` (direct server-side
+        resolution), or legacy ``user``.
 
         Example::
 
             result = await drip.wrap_api_call(
-                user="user_123",
+                external_customer_id="user_123",
                 meter="tokens",
                 call=lambda: openai.chat.completions.create(...),
                 extract_usage=lambda r: r.usage.total_tokens,
             )
         """
         resolved_id = (await self._resolve_customer(user)) if user else customer_id
-        if not resolved_id:
-            raise DripError("Either 'customer_id' or 'user' is required")
+        if not resolved_id and not external_customer_id:
+            raise DripError(
+                "Either 'customer_id', 'external_customer_id', or 'user' is required"
+            )
 
         # Generate idempotency key BEFORE the call (deterministic for retry safety)
+        identity = resolved_id or external_customer_id or ""
         key = idempotency_key or _deterministic_idempotency_key(
-            "wrap", resolved_id or "", meter, str(call)
+            "wrap", identity, meter, str(call)
         )
 
         # Step 1: Make the external API call (no retry - we don't control this)
@@ -3665,6 +4429,7 @@ class AsyncDrip:
         charge = await _retry_with_backoff_async(
             lambda: self.charge(
                 customer_id=resolved_id,
+                external_customer_id=external_customer_id,
                 meter=meter,
                 quantity=quantity,
                 idempotency_key=key,
@@ -4507,6 +5272,182 @@ class AsyncDrip:
         )
 
     # =========================================================================
+    # Pricing Plan Management
+    # =========================================================================
+
+    async def create_pricing_plan(
+        self,
+        name: str,
+        unit_type: str,
+        unit_price_usd: float,
+        is_active: bool = True,
+        pricing_model: str = "FLAT",
+        tiers: list[dict[str, Any]] | None = None,
+    ) -> "PricingPlan":
+        """Create a new pricing plan for a usage type."""
+        from .models import PricingPlan as PricingPlanModel
+
+        self._assert_secret_key("create_pricing_plan")
+        body: dict[str, Any] = {
+            "name": name,
+            "unitType": unit_type,
+            "unitPriceUsd": unit_price_usd,
+            "isActive": is_active,
+            "pricingModel": pricing_model,
+        }
+        if tiers is not None:
+            body["tiers"] = tiers
+
+        response = await self._post("/pricing-plans", json=body)
+        return PricingPlanModel.model_validate(response)
+
+    async def get_pricing_plan(self, plan_id: str) -> "PricingPlan":
+        """Retrieve a pricing plan by ID (includes tiers)."""
+        from .models import PricingPlan as PricingPlanModel
+
+        self._assert_secret_key("get_pricing_plan")
+        response = await self._get(f"/pricing-plans/{plan_id}")
+        return PricingPlanModel.model_validate(response)
+
+    async def list_pricing_plans(self) -> "ListPricingPlansResponse":
+        """List all pricing plans including tiers and pricing models."""
+        from .models import ListPricingPlansResponse
+
+        self._assert_secret_key("list_pricing_plans")
+        response = await self._get("/pricing-plans")
+        return ListPricingPlansResponse.model_validate(response)
+
+    async def update_pricing_plan(
+        self,
+        plan_id: str,
+        name: str | None = None,
+        unit_price_usd: float | None = None,
+        is_active: bool | None = None,
+        pricing_model: str | None = None,
+        tiers: list[dict[str, Any]] | None = _UNSET,
+    ) -> "PricingPlan":
+        """Update a pricing plan. Price changes create a new version."""
+        from .models import PricingPlan as PricingPlanModel
+
+        self._assert_secret_key("update_pricing_plan")
+        body: dict[str, Any] = {}
+        if name is not None:
+            body["name"] = name
+        if unit_price_usd is not None:
+            body["unitPriceUsd"] = unit_price_usd
+        if is_active is not None:
+            body["isActive"] = is_active
+        if pricing_model is not None:
+            body["pricingModel"] = pricing_model
+        if tiers is not _UNSET:
+            body["tiers"] = tiers
+
+        response = await self._patch(f"/pricing-plans/{plan_id}", json=body)
+        return PricingPlanModel.model_validate(response)
+
+    async def delete_pricing_plan(self, plan_id: str) -> None:
+        """Soft-delete a pricing plan by deactivating it."""
+        self._assert_secret_key("delete_pricing_plan")
+        await self._delete(f"/pricing-plans/{plan_id}")
+
+    async def get_pricing_plan_by_type(self, unit_type: str) -> "PricingPlan":
+        """Look up the active pricing plan for a usage type."""
+        from .models import PricingPlan as PricingPlanModel
+
+        self._assert_secret_key("get_pricing_plan_by_type")
+        response = await self._get(f"/pricing-plans/by-type/{unit_type}")
+        return PricingPlanModel.model_validate(response)
+
+    # =========================================================================
+    # Withdrawals (Fiat Off-Ramp)
+    # =========================================================================
+
+    async def withdraw(
+        self,
+        amount_usdc: str,
+        idempotency_key: str,
+        bank_description: str | None = None,
+    ) -> "WithdrawalResult":
+        """Create a withdrawal to convert USDC to fiat (bank transfer)."""
+        from .models import WithdrawalResult
+
+        self._assert_secret_key("withdraw")
+        body: dict[str, Any] = {
+            "amount_usdc": amount_usdc,
+            "idempotency_key": idempotency_key,
+        }
+        if bank_description is not None:
+            body["bank_description"] = bank_description
+
+        response = await self._post("/withdrawals", json=body)
+        return WithdrawalResult.model_validate(response)
+
+    async def list_withdrawals(
+        self,
+        status: str | None = None,
+        limit: int | None = None,
+        offset: int | None = None,
+    ) -> "ListWithdrawalsResponse":
+        """List withdrawals for your business."""
+        from .models import ListWithdrawalsResponse
+
+        self._assert_secret_key("list_withdrawals")
+        params: dict[str, Any] = {}
+        if status is not None:
+            params["status"] = status
+        if limit is not None:
+            params["limit"] = limit
+        if offset is not None:
+            params["offset"] = offset
+
+        response = await self._get("/withdrawals", params=params or None)
+        return ListWithdrawalsResponse.model_validate(response)
+
+    async def estimate_withdrawal_fee(self, amount_usdc: str) -> "WithdrawalFeeEstimate":
+        """Get a fee estimate for a withdrawal amount."""
+        from .models import WithdrawalFeeEstimate
+
+        self._assert_secret_key("estimate_withdrawal_fee")
+        response = await self._get(
+            "/withdrawals/fee-estimate",
+            params={"amount_usdc": amount_usdc},
+        )
+        return WithdrawalFeeEstimate.model_validate(response)
+
+    async def cancel_withdrawal(self, withdrawal_id: str) -> "CancelWithdrawalResult":
+        """Cancel a pending withdrawal (before on-chain processing begins)."""
+        from .models import CancelWithdrawalResult
+
+        self._assert_secret_key("cancel_withdrawal")
+        response = await self._delete(f"/withdrawals/{withdrawal_id}")
+        return CancelWithdrawalResult.model_validate(response)
+
+    # =========================================================================
+    # Portal Sessions
+    # =========================================================================
+
+    async def create_portal_session(
+        self,
+        customer_id: str,
+        expires_in_minutes: int | None = None,
+    ) -> "PortalSession":
+        """Create a portal session for customer dashboard access."""
+        from .models import PortalSession
+
+        self._assert_secret_key("create_portal_session")
+        body: dict[str, Any] = {"customerId": customer_id}
+        if expires_in_minutes is not None:
+            body["expiresInMinutes"] = expires_in_minutes
+
+        response = await self._post("/portal-sessions", json=body)
+        return PortalSession.model_validate(response)
+
+    async def revoke_portal_session(self, session_id: str) -> dict[str, Any]:
+        """Revoke a portal session, invalidating the token immediately."""
+        self._assert_secret_key("revoke_portal_session")
+        return await self._delete(f"/portal-sessions/{session_id}")
+
+    # =========================================================================
     # Static Utility Methods
     # =========================================================================
 
@@ -4621,3 +5562,118 @@ class AsyncDrip:
 
         response = await self._post("/entitlements/check", json=body)
         return EntitlementCheckResult.model_validate(response)
+
+    # =========================================================================
+    # Payload Mapping Engine
+    # =========================================================================
+
+    async def create_payload_mapping(
+        self,
+        name: str,
+        source_name: str,
+        target_unit_type: str,
+        target_quantity_path: str,
+        target_customer_id_path: str,
+        *,
+        target_idempotency_path: str | None = None,
+        target_metadata_map: dict[str, str] | None = None,
+        target_action_name: str | None = None,
+        sample_input: dict[str, Any] | None = None,
+        transform_rules: dict[str, Any] | None = None,
+        is_active: bool = True,
+    ) -> dict[str, Any]:
+        """
+        Create a payload mapping that transforms arbitrary JSON into Drip's
+        canonical usage event shape.
+
+        Once created, your services can POST their native payloads to
+        ``/v1/ingest/{source_name}`` without any SDK code changes.
+
+        Requires a secret key (``sk_*``) with the ``ADMIN`` role.
+        """
+        self._assert_secret_key("create_payload_mapping()")
+        body: dict[str, Any] = {
+            "name": name,
+            "sourceName": source_name,
+            "targetUnitType": target_unit_type,
+            "targetQuantityPath": target_quantity_path,
+            "targetCustomerIdPath": target_customer_id_path,
+            "isActive": is_active,
+        }
+        if target_idempotency_path is not None:
+            body["targetIdempotencyPath"] = target_idempotency_path
+        if target_metadata_map is not None:
+            body["targetMetadataMap"] = target_metadata_map
+        if target_action_name is not None:
+            body["targetActionName"] = target_action_name
+        if sample_input is not None:
+            body["sampleInput"] = sample_input
+        if transform_rules is not None:
+            body["transformRules"] = transform_rules
+
+        return await self._post("/payload-mappings", json=body)
+
+    async def list_payload_mappings(self) -> dict[str, Any]:
+        """List all payload mappings for the authenticated business."""
+        self._assert_secret_key("list_payload_mappings()")
+        return await self._get("/payload-mappings")
+
+    async def get_payload_mapping(self, mapping_id: str) -> dict[str, Any]:
+        """Get a single payload mapping by ID."""
+        self._assert_secret_key("get_payload_mapping()")
+        return await self._get(f"/payload-mappings/{mapping_id}")
+
+    async def update_payload_mapping(
+        self, mapping_id: str, **patch: Any
+    ) -> dict[str, Any]:
+        """
+        Update a payload mapping. Appends a new immutable snapshot.
+
+        Pass camelCase field names (e.g. ``targetQuantityPath=...``).
+        """
+        self._assert_secret_key("update_payload_mapping()")
+        return await self._patch(f"/payload-mappings/{mapping_id}", json=patch)
+
+    async def delete_payload_mapping(self, mapping_id: str) -> None:
+        """Delete a payload mapping."""
+        self._assert_secret_key("delete_payload_mapping()")
+        await self._delete(f"/payload-mappings/{mapping_id}")
+
+    async def list_payload_mapping_versions(
+        self, mapping_id: str
+    ) -> dict[str, Any]:
+        """List historical version snapshots for a payload mapping."""
+        self._assert_secret_key("list_payload_mapping_versions()")
+        return await self._get(f"/payload-mappings/{mapping_id}/versions")
+
+    async def dry_run_payload_mapping(
+        self, mapping_id: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        """
+        Dry-run a payload mapping against a sample payload. Returns the
+        transformed event Drip *would* record — no side effects.
+        """
+        self._assert_secret_key("dry_run_payload_mapping()")
+        return await self._post(
+            f"/payload-mappings/{mapping_id}/dry-run",
+            json={"payload": payload},
+        )
+
+    async def ingest_via_mapping(
+        self, mapping_slug: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        """
+        Ingest a raw payload via a named payload mapping. The payload is
+        transformed on the edge and recorded as an event.
+
+        Requires a secret key (``sk_*``) with the ``OPERATOR`` role or higher.
+
+        Example::
+
+            result = await client.ingest_via_mapping("rpc-proxy", {
+                "request": {"method": "eth_call", "customer": "cus_abc", "id": "req-1"},
+                "usage":   {"compute_units": 17, "cache_hit": False},
+                "meta":    {"region": "us-east-1"},
+            })
+        """
+        return await self._post(f"/ingest/{mapping_slug}", json=payload)
