@@ -846,14 +846,14 @@ class PricingPlan(BaseModel):
     name: str
     unit_type: str = Field(alias="unitType")
     unit_price_usd: str = Field(alias="unitPriceUsd")
-    currency: str
+    currency: str = "USDC"
     is_active: bool = Field(alias="isActive")
-    pricing_model: PricingModel = Field(alias="pricingModel")
+    pricing_model: PricingModel | None = Field(default=None, alias="pricingModel")
     tiers: list[PricingTier] = Field(default_factory=list)
     created_at: str = Field(alias="createdAt")
     updated_at: str = Field(alias="updatedAt")
 
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
 
 class ListPricingPlansResponse(BaseModel):

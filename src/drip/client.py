@@ -1106,6 +1106,8 @@ class Drip:
         *,
         user: str | None = None,
         external_customer_id: str | None = None,
+        unit_type: str | None = None,
+        units: float | None = None,
     ) -> ChargeResult:
         """
         Charge a customer for usage.
@@ -1140,6 +1142,12 @@ class Drip:
             # Zero-roundtrip: server maps your DB ID to a Drip customer
             drip.charge(external_customer_id="user_123", meter="api_calls")
         """
+        # Node SDK parity: accept unit_type/units as aliases for meter/quantity
+        if unit_type is not None:
+            meter = unit_type
+        if units is not None:
+            quantity = units
+
         resolved_id = self._resolve_customer(user) if user else customer_id
         if not resolved_id and not external_customer_id:
             raise DripError(
@@ -1222,6 +1230,7 @@ class Drip:
         *,
         user: str | None = None,
         external_customer_id: str | None = None,
+        unit_type: str | None = None,
     ) -> TrackUsageBatchResult: ...
 
     @overload
@@ -1238,6 +1247,7 @@ class Drip:
         *,
         user: str | None = None,
         external_customer_id: str | None = None,
+        unit_type: str | None = None,
     ) -> TrackUsageResult: ...
 
     def track_usage(
@@ -1253,6 +1263,7 @@ class Drip:
         *,
         user: str | None = None,
         external_customer_id: str | None = None,
+        unit_type: str | None = None,
     ) -> TrackUsageResult | TrackUsageBatchResult:
         """
         Record usage for internal visibility WITHOUT billing.
@@ -1280,6 +1291,10 @@ class Drip:
             TrackUsageResult for sync mode, or TrackUsageBatchResult for
             explicit batch mode.
         """
+        # Node SDK parity: accept unit_type as alias for meter
+        if unit_type is not None:
+            meter = unit_type
+
         resolved_id = self._resolve_customer(user) if user else customer_id
         if not resolved_id and not external_customer_id:
             raise DripError(
@@ -1325,6 +1340,8 @@ class Drip:
         *,
         user: str | None = None,
         external_customer_id: str | None = None,
+        unit_type: str | None = None,
+        units: float | None = None,
     ) -> ChargeAsyncResult:
         """
         Charge a customer asynchronously — returns immediately.
@@ -1350,6 +1367,12 @@ class Drip:
         Returns:
             ChargeAsyncResult with queued charge details.
         """
+        # Node SDK parity: accept unit_type/units as aliases for meter/quantity
+        if unit_type is not None:
+            meter = unit_type
+        if units is not None:
+            quantity = units
+
         resolved_id = self._resolve_customer(user) if user else customer_id
         if not resolved_id and not external_customer_id:
             raise DripError(
