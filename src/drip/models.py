@@ -250,32 +250,48 @@ class ChargeResult(BaseModel):
 
 
 class TrackUsageResult(BaseModel):
-    """Result of tracking usage without billing."""
+    """Result of tracking usage.
+
+    Fields are optional because ``track_usage`` can hit three endpoints
+    with different response shapes:
+
+    - ``/usage`` (mode="sync", default) — billing-aware; response has
+      ``usageEventId`` + ``charge`` nested (same shape as the removed
+      ``ChargeResult``).
+    - ``/usage/async`` (mode="batch") — queued; response has ``charge``.
+    - ``/usage/internal`` (mode="internal") — visibility-only; response
+      has ``usageEventId`` + ``customerId`` + ``usageType`` top-level.
+    """
 
     success: bool
-    usage_event_id: str = Field(alias="usageEventId")
-    customer_id: str = Field(alias="customerId")
-    usage_type: str = Field(alias="usageType")
-    quantity: float
-    is_internal: bool = Field(alias="isInternal")
-    message: str
+    usage_event_id: str | None = Field(default=None, alias="usageEventId")
+    # /usage/internal visibility shape
+    customer_id: str | None = Field(default=None, alias="customerId")
+    usage_type: str | None = Field(default=None, alias="usageType")
+    quantity: float | None = None
+    is_internal: bool | None = Field(default=None, alias="isInternal")
+    message: str | None = None
+    # /usage billing-aware shape (was ChargeResult)
+    is_duplicate: bool | None = Field(default=None, alias="isDuplicate")
+    charge: ChargeInfo | None = None
 
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
 
 class TrackUsageBatchResult(BaseModel):
-    """Result of tracking usage in batch mode."""
+    """Result of tracking usage in batch mode (``/usage/async``)."""
 
     success: bool
     mode: Literal["batch"] = "batch"
-    customer_id: str = Field(alias="customerId")
-    usage_type: str = Field(alias="usageType")
-    quantity: float
-    idempotency_key: str = Field(alias="idempotencyKey")
-    pending_events: int = Field(alias="pendingEvents")
-    message: str
+    customer_id: str | None = Field(default=None, alias="customerId")
+    usage_type: str | None = Field(default=None, alias="usageType")
+    quantity: float | None = None
+    idempotency_key: str | None = Field(default=None, alias="idempotencyKey")
+    pending_events: int | None = Field(default=None, alias="pendingEvents")
+    message: str | None = None
+    charge: ChargeInfo | None = None
 
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
 
 class ChargeCustomer(BaseModel):
@@ -1021,7 +1037,14 @@ class WrapApiCallResult(BaseModel):
     """Result of wrapping an external API call with usage recording."""
 
     result: Any = Field(..., description="The result from the external API call")
-    charge: ChargeResult = Field(..., description="The charge result from Drip")
+    charge: TrackUsageResult = Field(
+        ...,
+        description=(
+            "The usage-tracking result from Drip. When the backend finds a "
+            "matching pricing plan, this carries a nested ``charge`` "
+            "(ChargeInfo) with id/amountUsdc/txHash."
+        ),
+    )
     idempotency_key: str = Field(
         alias="idempotencyKey", description="The idempotency key used (useful for debugging)"
     )

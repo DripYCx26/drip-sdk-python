@@ -1093,85 +1093,25 @@ class Drip:
         self._delete(f"/entitlement-rules/{rule_id}")
 
     # =========================================================================
-    # Charging & Usage
+    # Usage Tracking
     # =========================================================================
-
-    def charge(
-        self,
-        customer_id: str | None = None,
-        meter: str = "generic",
-        quantity: float = 1,
-        idempotency_key: str | None = None,
-        metadata: dict[str, Any] | None = None,
-        *,
-        user: str | None = None,
-        external_customer_id: str | None = None,
-        unit_type: str | None = None,
-        units: float | None = None,
-    ) -> ChargeResult:
-        """
-        Charge a customer for usage.
-
-        Identifier options (one of):
-        - ``customer_id``: Drip customer ID you already hold.
-        - ``external_customer_id``: Your own database ID. The server
-          auto-provisions an internal Drip customer on first use — no extra
-          round-trip.
-        - ``user``: Legacy convenience — performs an eager ``POST /customers``
-          on the client side. Prefer ``external_customer_id`` for new code.
-
-        Minimum viable call — ``meter`` defaults to ``"generic"`` and
-        ``quantity`` defaults to ``1``.
-
-        Args:
-            customer_id: Drip customer ID.
-            meter: Usage meter type (e.g., "api_calls", "tokens"). Defaults to "generic".
-            quantity: Amount to charge. Defaults to 1.
-            idempotency_key: Optional key to prevent duplicate charges.
-            metadata: Optional metadata.
-            user: Legacy external user ID. Eagerly creates the customer on
-                the client side.
-            external_customer_id: Your database's customer ID, sent directly
-                to the server. Auto-provisioned on first use.
-
-        Returns:
-            ChargeResult with charge details.
-
-        Example::
-
-            # Zero-roundtrip: server maps your DB ID to a Drip customer
-            drip.charge(external_customer_id="user_123", meter="api_calls")
-        """
-        # Node SDK parity: accept unit_type/units as aliases for meter/quantity
-        if unit_type is not None:
-            meter = unit_type
-        if units is not None:
-            quantity = units
-
-        resolved_id = self._resolve_customer(user) if user else customer_id
-        if not resolved_id and not external_customer_id:
-            raise DripError(
-                "Either 'customer_id', 'external_customer_id', or 'user' is required"
-            )
-
-        body: dict[str, Any] = {
-            "usageType": meter,
-            "quantity": quantity,
-        }
-        if resolved_id:
-            body["customerId"] = resolved_id
-        if external_customer_id:
-            body["externalCustomerId"] = external_customer_id
-
-        identity = resolved_id or external_customer_id or ""
-        body["idempotencyKey"] = idempotency_key or _deterministic_idempotency_key(
-            "chg", identity, meter, quantity
-        )
-        if metadata:
-            body["metadata"] = metadata
-
-        response = self._post("/usage", json=body)
-        return ChargeResult.model_validate(response)
+    #
+    # ``charge()`` and ``charge_async()`` were removed — they were just
+    # thin wrappers around POST /usage and POST /usage/async. All usage
+    # should flow through ``track_usage()`` below. The server decides
+    # whether a billable charge is created (based on the pricing plan)
+    # and when to batch-settle on-chain. "Charge" is a server concern,
+    # not a client concern.
+    #
+    # Migration:
+    #   client.charge(customer_id=..., meter=..., quantity=...)
+    #     → client.track_usage(customer_id=..., meter=..., quantity=...)
+    #
+    #   client.charge_async(customer_id=..., meter=..., quantity=...)
+    #     → client.track_usage(customer_id=..., meter=..., quantity=..., mode="batch")
+    #
+    # ``get_charge()`` / ``list_charges()`` remain for read-only
+    # reconciliation.
 
     def get_charge(self, charge_id: str) -> Charge:
         """
@@ -1243,7 +1183,7 @@ class Drip:
         units: str | None = None,
         description: str | None = None,
         metadata: dict[str, Any] | None = None,
-        mode: Literal["batch", "sync"] = "sync",
+        mode: Literal["batch", "sync", "internal"] = "sync",
         *,
         user: str | None = None,
         external_customer_id: str | None = None,
@@ -1259,7 +1199,7 @@ class Drip:
         units: str | None = None,
         description: str | None = None,
         metadata: dict[str, Any] | None = None,
-        mode: Literal["batch", "sync"] = "sync",
+        mode: Literal["batch", "sync", "internal"] = "sync",
         *,
         user: str | None = None,
         external_customer_id: str | None = None,
@@ -1300,7 +1240,7 @@ class Drip:
             raise DripError(
                 "Either 'customer_id', 'external_customer_id', or 'user' is required"
             )
-        if mode not in ("batch", "sync"):
+        if mode not in ("batch", "sync", "internal"):
             raise DripError("mode must be 'batch' or 'sync'")
 
         body: dict[str, Any] = {
@@ -1323,80 +1263,23 @@ class Drip:
         if metadata:
             body["metadata"] = metadata
 
-        path = "/usage/internal" if mode == "sync" else "/usage/internal/batch"
+        # Dispatch:
+        #   mode="sync"     → POST /usage          (billing-aware)
+        #   mode="batch"    → POST /usage/async    (queued billing)
+        #   mode="internal" → POST /usage/internal (visibility-only)
+        if mode == "internal":
+            path = "/usage/internal"
+        elif mode == "batch":
+            path = "/usage/async"
+        else:
+            path = "/usage"
         response = self._post(path, json=body)
         if mode == "batch":
             response["mode"] = "batch"
             return TrackUsageBatchResult.model_validate(response)
         return TrackUsageResult.model_validate(response)
 
-    def charge_async(
-        self,
-        customer_id: str | None = None,
-        meter: str = "generic",
-        quantity: float = 1,
-        idempotency_key: str | None = None,
-        metadata: dict[str, Any] | None = None,
-        *,
-        user: str | None = None,
-        external_customer_id: str | None = None,
-        unit_type: str | None = None,
-        units: float | None = None,
-    ) -> ChargeAsyncResult:
-        """
-        Charge a customer asynchronously — returns immediately.
-
-        Identifier options (one of):
-        - ``customer_id``: Drip customer ID.
-        - ``external_customer_id``: Your database ID, auto-provisioned
-          server-side on first use.
-        - ``user``: Legacy client-side eager resolution.
-
-        Minimum viable call — ``meter`` defaults to ``"generic"`` and
-        ``quantity`` defaults to ``1``.
-
-        Args:
-            customer_id: Drip customer ID.
-            meter: Usage meter type. Defaults to "generic".
-            quantity: Amount to charge. Defaults to 1.
-            idempotency_key: Optional key to prevent duplicate charges.
-            metadata: Optional metadata.
-            user: Legacy external user ID (eager client-side creation).
-            external_customer_id: Your database's customer ID, sent directly.
-
-        Returns:
-            ChargeAsyncResult with queued charge details.
-        """
-        # Node SDK parity: accept unit_type/units as aliases for meter/quantity
-        if unit_type is not None:
-            meter = unit_type
-        if units is not None:
-            quantity = units
-
-        resolved_id = self._resolve_customer(user) if user else customer_id
-        if not resolved_id and not external_customer_id:
-            raise DripError(
-                "Either 'customer_id', 'external_customer_id', or 'user' is required"
-            )
-
-        body: dict[str, Any] = {
-            "usageType": meter,
-            "quantity": quantity,
-        }
-        if resolved_id:
-            body["customerId"] = resolved_id
-        if external_customer_id:
-            body["externalCustomerId"] = external_customer_id
-
-        identity = resolved_id or external_customer_id or ""
-        body["idempotencyKey"] = idempotency_key or _deterministic_idempotency_key(
-            "chg-async", identity, meter, quantity
-        )
-        if metadata:
-            body["metadata"] = metadata
-
-        response = self._post("/usage/async", json=body)
-        return ChargeAsyncResult.model_validate(response)
+    # `charge_async()` removed — use `track_usage(..., mode="batch")`.
 
     def list_events(
         self,
@@ -1562,7 +1445,7 @@ class Drip:
 
         # Step 3: Record usage in Drip with retry (idempotency makes this safe)
         charge = _retry_with_backoff_sync(
-            lambda: self.charge(
+            lambda: self.track_usage(
                 customer_id=resolved_id,
                 external_customer_id=external_customer_id,
                 meter=meter,
@@ -3106,7 +2989,9 @@ class Drip:
             on_add=on_add,
             on_flush=on_flush,
         )
-        return StreamMeter(_charge_fn=self.charge, _options=options)
+        # StreamMeter previously used charge(); it now dispatches through
+        # track_usage() which hits the same POST /usage billing endpoint.
+        return StreamMeter(_charge_fn=self.track_usage, _options=options)
 
     # =========================================================================
     # Entitlement Methods
@@ -3564,19 +3449,23 @@ class _RunContext:
             **kwargs,
         )
 
-    def charge(
+    def track_usage(
         self,
         meter: str,
         quantity: float,
         **kwargs: Any,
-    ) -> ChargeResult:
-        """Charge usage and emit an event in the current run."""
+    ) -> TrackUsageResult:
+        """Track usage and emit an event in the current run.
+
+        Replaces the removed ``charge()`` method. Hits ``POST /usage``
+        which creates a billable charge when a pricing plan matches.
+        """
         self._client.emit_event(
             run_id=self.run_id,
             event_type=meter,
             quantity=quantity,
         )
-        return self._client.charge(
+        return self._client.track_usage(
             customer_id=self.customer_id,
             meter=meter,
             quantity=quantity,
@@ -3606,19 +3495,23 @@ class _AsyncRunContext:
             **kwargs,
         )
 
-    async def charge(
+    async def track_usage(
         self,
         meter: str,
         quantity: float,
         **kwargs: Any,
-    ) -> ChargeResult:
-        """Charge usage and emit an event in the current run."""
+    ) -> TrackUsageResult:
+        """Track usage and emit an event in the current run.
+
+        Replaces the removed ``charge()`` method. Hits ``POST /usage``
+        which creates a billable charge when a pricing plan matches.
+        """
         await self._client.emit_event(
             run_id=self.run_id,
             event_type=meter,
             quantity=quantity,
         )
-        return await self._client.charge(
+        return await self._client.track_usage(
             customer_id=self.customer_id,
             meter=meter,
             quantity=quantity,
@@ -4152,57 +4045,11 @@ class AsyncDrip:
         await self._delete(f"/customers/{customer_id}/spending-caps/{cap_id}")
 
     # =========================================================================
-    # Charging & Usage
+    # Usage Tracking
     # =========================================================================
-
-    async def charge(
-        self,
-        customer_id: str | None = None,
-        meter: str = "generic",
-        quantity: float = 1,
-        idempotency_key: str | None = None,
-        metadata: dict[str, Any] | None = None,
-        *,
-        user: str | None = None,
-        external_customer_id: str | None = None,
-    ) -> ChargeResult:
-        """
-        Charge a customer for usage.
-
-        Identifier options (one of):
-        - ``customer_id``: Drip customer ID.
-        - ``external_customer_id``: Your database's customer ID, sent
-          directly to the server. Auto-provisioned on first use.
-        - ``user``: Legacy eager client-side resolution via ``POST /customers``.
-
-        Example::
-
-            await drip.charge(external_customer_id="user_123", meter="api_calls")
-        """
-        resolved_id = (await self._resolve_customer(user)) if user else customer_id
-        if not resolved_id and not external_customer_id:
-            raise DripError(
-                "Either 'customer_id', 'external_customer_id', or 'user' is required"
-            )
-
-        body: dict[str, Any] = {
-            "usageType": meter,
-            "quantity": quantity,
-        }
-        if resolved_id:
-            body["customerId"] = resolved_id
-        if external_customer_id:
-            body["externalCustomerId"] = external_customer_id
-
-        identity = resolved_id or external_customer_id or ""
-        body["idempotencyKey"] = idempotency_key or _deterministic_idempotency_key(
-            "chg", identity, meter, quantity
-        )
-        if metadata:
-            body["metadata"] = metadata
-
-        response = await self._post("/usage", json=body)
-        return ChargeResult.model_validate(response)
+    #
+    # ``charge()`` and ``charge_async()`` were removed — use
+    # ``track_usage()`` below. See the sync Drip client for migration notes.
 
     async def get_charge(self, charge_id: str) -> Charge:
         """Get detailed charge information."""
@@ -4254,7 +4101,7 @@ class AsyncDrip:
         units: str | None = None,
         description: str | None = None,
         metadata: dict[str, Any] | None = None,
-        mode: Literal["batch", "sync"] = "sync",
+        mode: Literal["batch", "sync", "internal"] = "sync",
         *,
         user: str | None = None,
         external_customer_id: str | None = None,
@@ -4269,7 +4116,7 @@ class AsyncDrip:
         units: str | None = None,
         description: str | None = None,
         metadata: dict[str, Any] | None = None,
-        mode: Literal["batch", "sync"] = "sync",
+        mode: Literal["batch", "sync", "internal"] = "sync",
         *,
         user: str | None = None,
         external_customer_id: str | None = None,
@@ -4289,7 +4136,7 @@ class AsyncDrip:
             raise DripError(
                 "Either 'customer_id', 'external_customer_id', or 'user' is required"
             )
-        if mode not in ("batch", "sync"):
+        if mode not in ("batch", "sync", "internal"):
             raise DripError("mode must be 'batch' or 'sync'")
 
         body: dict[str, Any] = {
@@ -4312,57 +4159,23 @@ class AsyncDrip:
         if metadata:
             body["metadata"] = metadata
 
-        path = "/usage/internal" if mode == "sync" else "/usage/internal/batch"
+        # Dispatch:
+        #   mode="sync"     → POST /usage          (billing-aware)
+        #   mode="batch"    → POST /usage/async    (queued billing)
+        #   mode="internal" → POST /usage/internal (visibility-only)
+        if mode == "internal":
+            path = "/usage/internal"
+        elif mode == "batch":
+            path = "/usage/async"
+        else:
+            path = "/usage"
         response = await self._post(path, json=body)
         if mode == "batch":
             response["mode"] = "batch"
             return TrackUsageBatchResult.model_validate(response)
         return TrackUsageResult.model_validate(response)
 
-    async def charge_async(
-        self,
-        customer_id: str | None = None,
-        meter: str = "generic",
-        quantity: float = 1,
-        idempotency_key: str | None = None,
-        metadata: dict[str, Any] | None = None,
-        *,
-        user: str | None = None,
-        external_customer_id: str | None = None,
-    ) -> ChargeAsyncResult:
-        """
-        Charge a customer asynchronously — returns immediately.
-
-        Accepts ``customer_id``, ``external_customer_id`` (direct server-side
-        auto-provisioning), or legacy ``user``.
-
-        The charge is queued for background processing. Subscribe to
-        ``charge.succeeded`` / ``charge.failed`` webhooks for final status.
-        """
-        resolved_id = (await self._resolve_customer(user)) if user else customer_id
-        if not resolved_id and not external_customer_id:
-            raise DripError(
-                "Either 'customer_id', 'external_customer_id', or 'user' is required"
-            )
-
-        body: dict[str, Any] = {
-            "usageType": meter,
-            "quantity": quantity,
-        }
-        if resolved_id:
-            body["customerId"] = resolved_id
-        if external_customer_id:
-            body["externalCustomerId"] = external_customer_id
-
-        identity = resolved_id or external_customer_id or ""
-        body["idempotencyKey"] = idempotency_key or _deterministic_idempotency_key(
-            "chg-async", identity, meter, quantity
-        )
-        if metadata:
-            body["metadata"] = metadata
-
-        response = await self._post("/usage/async", json=body)
-        return ChargeAsyncResult.model_validate(response)
+    # `charge_async()` removed — use `track_usage(..., mode="batch")`.
 
     async def list_events(
         self,
@@ -4450,7 +4263,7 @@ class AsyncDrip:
 
         # Step 3: Record usage in Drip with retry (idempotency makes this safe)
         charge = await _retry_with_backoff_async(
-            lambda: self.charge(
+            lambda: self.track_usage(
                 customer_id=resolved_id,
                 external_customer_id=external_customer_id,
                 meter=meter,
@@ -5549,7 +5362,9 @@ class AsyncDrip:
             on_add=on_add,
             on_flush=on_flush,
         )
-        return StreamMeter(_charge_fn=self.charge, _options=options)
+        # StreamMeter previously used charge(); it now dispatches through
+        # track_usage() which hits the same POST /usage billing endpoint.
+        return StreamMeter(_charge_fn=self.track_usage, _options=options)
 
     # =========================================================================
     # Entitlement Methods
