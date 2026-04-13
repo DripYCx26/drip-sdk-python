@@ -876,11 +876,26 @@ class Drip:
     # Customer Provisioning
     # =========================================================================
 
-    def provision_customer(self, customer_id: str) -> Customer:
-        """Provision (or re-provision) an ERC-4337 smart account for a customer."""
+    def provision_customer(self, customer_id: str) -> dict[str, Any]:
+        """Provision (or re-provision) an ERC-4337 smart account for a customer.
+
+        Returns the raw provisioning result as a dict (not a Customer):
+
+            {
+              "smart_account_address": "0x...",
+              "already_deployed": bool,
+              "deploy_tx_hash": str | None,
+              "fund_tx_hash": str | None,
+              "billing_deposit_tx_hash": str | None,
+              "billing_balance_usdc": str,
+              "funding_required": bool,
+            }
+
+        Use ``get_customer(customer_id)`` afterwards if you need the
+        updated Customer record.
+        """
         self._assert_secret_key("provision_customer()")
-        response = self._post(f"/customers/{customer_id}/provision", json={})
-        return Customer.model_validate(response)
+        return self._post(f"/customers/{customer_id}/provision", json={})
 
     def sync_customer_balance(self, customer_id: str) -> dict[str, str]:
         """Sync a customer's on-chain balance from the blockchain."""

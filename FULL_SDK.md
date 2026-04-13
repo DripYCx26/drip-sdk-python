@@ -290,6 +290,26 @@ These administrative endpoints are available via the REST API with a secret key 
 | `PATCH /v1/usage-caps/:id` | Update a usage cap (limit value, alert threshold, active status) |
 | `GET /v1/usage-caps/types` | List available cap types |
 
+### Payload Mappings (Secret Key Only)
+
+Server-side translator from your native JSON shape → Drip's canonical
+usage event. See the [Payload Mappings section](#payload-mappings--custom-shapes-without-code-changes)
+below for the full walkthrough.
+
+| Method | Description |
+| ------ | ----------- |
+| `create_payload_mapping(...)` | Create a mapping from your shape to a canonical event |
+| `list_payload_mappings()` | List all mappings for the business |
+| `get_payload_mapping(id)` | Get a single mapping by ID |
+| `update_payload_mapping(id, **patch)` | Update a mapping (appends a version snapshot) |
+| `delete_payload_mapping(id)` | Delete a mapping |
+| `list_payload_mapping_versions(id)` | List immutable version snapshots |
+| `dry_run_payload_mapping(id, payload)` | Preview the canonical event without creating one |
+| `ingest_via_mapping(source_name, payload)` | POST your raw payload to `/v1/ingest/:source_name` |
+
+All eight methods exist on both `Drip` and `AsyncDrip` (use `await` on
+the async variants).
+
 ### Other
 
 | Method | Description |
@@ -297,6 +317,160 @@ These administrative endpoints are available via the REST API with a secret key 
 | `checkout(params)` | Create checkout session (fiat on-ramp) |
 | `list_meters()` | List available meters (returns `data`: list of `Meter` with `name`, `meter`, `unit_price_usd`, `is_active`) |
 | `ping()` | Verify API connection |
+
+---
+
+## Payload Mappings — Custom Shapes Without Code Changes
+
+The payload mapping engine lets your existing services keep emitting
+their native JSON shape. You declare a mapping once, then any service
+can `POST` to `/v1/ingest/:source_name` and Drip translates the payload
+to a canonical usage event server-side.
+
+This avoids the most common SDK adoption blocker: "I don't want to
+rewrite every call site to use `track_usage()` — my logger already
+emits its own JSON."
+
+### How it works
+
+1. You create a mapping (one-time, admin key required) that declares
+   JSONPath expressions for the canonical event fields.
+2. Your service POSTs its raw payload to `POST /v1/ingest/:source_name`.
+3. Drip walks the payload with a restricted JSONPath subset, builds a
+   canonical event, and forwards it through the same `/usage/internal`
+   pipeline as `track_usage()`. No code changes in your service.
+
+### Supported JSONPath subset
+
+The engine is intentionally narrow — no script expressions, no
+recursive descent over user input, no eval. Just predictable path
+traversal.
+
+| Syntax | Example | Resolves to |
+| ------ | ------- | ----------- |
+| `$` | `$` | The whole payload |
+| `$.a.b.c` | `$.usage.compute_units` | Nested object property |
+| `$.a[0]` | `$.items[0].quantity` | Array index access |
+| `$.a[-1]` | `$.items[-1]` | Negative index from end |
+| `$['weird key']` | `$.request['weird key'].x` | Bracket-quoted property |
+| `$.a[*].b` | `$.items[*].quantity` | First-defined element wildcard |
+
+Anything else throws `MAPPING_FAILED` at dry-run / ingest time.
+
+### Step-by-step example
+
+Say your RPC proxy already emits payloads like:
+
+```json
+{
+  "request": { "method": "eth_call", "customer": "cus_abc", "id": "req-1" },
+  "usage":   { "compute_units": 17, "cache_hit": false },
+  "meta":    { "region": "us-east-1" }
+}
+```
+
+#### 1. Create the mapping (admin key)
+
+```python
+mapping = client.create_payload_mapping(
+    name="RPC Proxy Compute Units",
+    source_name="rpc-proxy",  # becomes /v1/ingest/rpc-proxy
+    target_unit_type="eth_call_compute",
+    target_quantity_path="$.usage.compute_units",
+    target_customer_id_path="$.request.customer",
+    target_idempotency_path="$.request.id",
+    target_metadata_map={
+        "region": "$.meta.region",
+        "method": "$.request.method",
+    },
+)
+```
+
+#### 2. Dry-run before going live
+
+```python
+preview = client.dry_run_payload_mapping(mapping["id"], {
+    "request": {"method": "eth_call", "customer": "cus_abc", "id": "req-1"},
+    "usage":   {"compute_units": 17},
+    "meta":    {"region": "us-east-1"},
+})
+
+print(preview["event"])
+# {
+#   'customerId': 'cus_abc',
+#   'usageType': 'eth_call_compute',
+#   'quantity': 17,
+#   'idempotencyKey': 'req-1',
+#   'metadata': {'region': 'us-east-1', 'method': 'eth_call'},
+# }
+```
+
+If the dry-run fails, the response includes which `path` didn't
+resolve so you can fix the mapping or the source payload.
+
+#### 3. Ingest from your service
+
+```python
+client.ingest_via_mapping("rpc-proxy", {
+    "request": {"method": "eth_call", "customer": "cus_abc", "id": "req-1"},
+    "usage":   {"compute_units": 17, "cache_hit": False},
+    "meta":    {"region": "us-east-1"},
+})
+# → 202 {'ok': True, 'sourceName': 'rpc-proxy', 'mappingId': '...', 'usageEventId': '...'}
+```
+
+Drip resolves the JSONPath expressions, builds the canonical event,
+and records it via the standard `/usage/internal` pipeline. The event
+shows up in the dashboard exactly like a direct `track_usage()` call.
+
+### Async usage
+
+Every method is mirrored on `AsyncDrip`:
+
+```python
+from drip import AsyncDrip
+
+async with AsyncDrip(api_key="sk_live_...") as client:
+    await client.create_payload_mapping(
+        name="RPC Proxy",
+        source_name="rpc-proxy",
+        target_unit_type="eth_call_compute",
+        target_quantity_path="$.usage.compute_units",
+        target_customer_id_path="$.request.customer",
+    )
+
+    preview = await client.dry_run_payload_mapping(mapping_id, payload)
+    await client.ingest_via_mapping("rpc-proxy", payload)
+```
+
+### Updates and rollback
+
+Each `update_payload_mapping()` call appends a new immutable snapshot
+to `payload_mapping_versions`. Use `list_payload_mapping_versions(id)`
+to see history.
+
+### Required vs. optional fields
+
+| Field | Required? | Notes |
+| ----- | --------- | ----- |
+| `target_unit_type` | required | Literal string (not a path). Becomes `usageType` on the event. |
+| `target_quantity_path` | required | Must resolve to a number or numeric string. |
+| `target_customer_id_path` | required | Must resolve to a string. |
+| `target_idempotency_path` | optional | When unset or unresolved, Drip auto-generates an idempotency key. |
+| `target_action_name` | optional | Literal string applied to every event from this mapping. |
+| `target_metadata_map` | optional | `{key: jsonPath}`. Entries that don't resolve are silently skipped. |
+| `sample_input` | optional | Stored alongside the mapping for dashboard previews — never used at runtime. |
+| `transform_rules` | reserved | Reserved for a future transform DSL — passthrough today. |
+| `is_active` | optional | Defaults to `True`. Inactive mappings return `410 Gone` from `/v1/ingest/:source_name`. |
+
+### Status codes from `/v1/ingest/:source_name`
+
+| Code | Meaning |
+| ---- | ------- |
+| `202 Accepted` | Payload was transformed and recorded. |
+| `400 Bad Request` (`MAPPING_FAILED`) | A required path didn't resolve, or quantity wasn't numeric. Response includes the offending `path`. |
+| `404 Not Found` (`PAYLOAD_MAPPING_NOT_FOUND`) | No mapping for that `source_name`. |
+| `410 Gone` (`PAYLOAD_MAPPING_INACTIVE`) | Mapping exists but `is_active=False`. |
 
 ---
 
